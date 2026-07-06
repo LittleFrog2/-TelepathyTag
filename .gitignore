@@ -42,3 +42,20 @@ TelepathyTag_repo/
 Thumbs.db
 *.swp
 *.tmp
+captures/
+.externalNativeBuild/
+.cxx/
+output-metadata.json
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. APIs or Firebase)
+google-services.json
+
+# Android Profiling
+*.hprof

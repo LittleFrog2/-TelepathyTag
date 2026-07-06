@@ -1,3 +1,9 @@
+# -TelepathyTag
+
+一款自适应安卓手机的防丢器。
+
+This repository contains the Android app and DWM3001CDK firmware work for the TelepathyTag UWB ranging demo.
+
 # DW3 QM33 SDK #
 
 This readme describes how to build and run provided code and examples from QM33 SDK on the development kit. For more information about functionalities please refer to Developer Manual from SDK package.
