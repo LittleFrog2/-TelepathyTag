@@ -1,0 +1,44 @@
+# Build outputs
+BuildOutput/
+**/build/
+cmake-build-*/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/compile_commands.json
+*.ninja
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.d
+*.a
+
+# Android/Gradle local state
+.gradle/
+.idea/
+.kotlin/
+local.properties
+*.iml
+
+# Generated packages and logs
+*.apk
+*.aab
+*.log
+*logcat*.txt
+uwb_logcat*.txt
+
+# Local backups and agent state
+backups/
+.agents/
+.codex/
+.git.invalid-empty/
+TelepathyTag_repo/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
