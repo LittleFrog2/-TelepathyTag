@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
     private val qnisServiceUuid = UUID.fromString("2E938FD0-6A61-11ED-A1EB-0242AC120002")
     private val bleManager by lazy { UwbBleManager(this) }
     private val feedbackManager by lazy { FeedbackManager(this) }
+    private val tagRepository by lazy { TagRepository(this) }
     private var bluetoothAdapter: BluetoothAdapter? = null
     private val scannedDevices = mutableStateListOf<ScanResult>()
     private val isScanning = mutableStateOf(false)
@@ -95,6 +96,7 @@ class MainActivity : ComponentActivity() {
                 val currentMac by bleManager.connectedMac.collectAsState()
                 val connState by bleManager.connectionState.collectAsState()
                 val debugLogs = remember { mutableStateListOf<String>() }
+                val tagBindings by tagRepository.bindings.collectAsState()
 
                 val uwbData by bleManager.uwbDataFlow.collectAsState(initial = UwbRealData(0.0f, 0.0f))
                 val findingStatus by bleManager.findingStatus.collectAsState()
@@ -123,6 +125,7 @@ class MainActivity : ComponentActivity() {
                         BleScanScreen(
                             devices = scannedDevices,
                             isScanning = isScanning.value,
+                            tagBindings = tagBindings,
                             onStartScan = { startLeScan() },
                             onDeviceClick = { mac ->
                                 stopLeScan()
@@ -132,15 +135,24 @@ class MainActivity : ComponentActivity() {
                     } else {
                         HaloTagRadarScreen(
                             connState = connState,
+                            connectedMac = currentMac,
                             uwbData = uwbData,
                             findingStatus = findingStatus,
                             debugLogs = debugLogs,
+                            tagBindings = tagBindings,
                             onStartFindingClick = {
                                 bleManager.sendStartFindingCmd()
                             },
                             onDisconnect = {
                                 feedbackManager.stop()
                                 bleManager.disconnect()
+                            },
+                            onConnectSavedDevice = { mac ->
+                                feedbackManager.stop()
+                                bleManager.connectToDevice(mac)
+                            },
+                            onAddBinding = { mac, name ->
+                                tagRepository.addBinding(mac, name)
                             }
                         )
                     }
@@ -217,6 +229,7 @@ class MainActivity : ComponentActivity() {
 fun BleScanScreen(
     devices: List<ScanResult>,
     isScanning: Boolean,
+    tagBindings: List<TagBinding>,
     onStartScan: () -> Unit,
     onDeviceClick: (String) -> Unit
 ) {
@@ -328,15 +341,13 @@ fun BleScanScreen(
                                     initialOffsetY = { it / 2 }
                                 )
                         ) {
+                            val existingBinding = tagBindings.find { it.mac == result.device.address }
                             DeviceCard(
                                 result = result,
                                 index = index,
+                                customName = existingBinding?.name,
                                 onClick = { onDeviceClick(result.device.address) }
                             )
-                        }
-                        // Stagger delay
-                        if (index < devices.lastIndex) {
-                            // Visual stagger is handled by AnimatedVisibility per-item timing
                         }
                     }
                 }
@@ -373,10 +384,16 @@ fun EmptyState() {
 
 @SuppressLint("MissingPermission")
 @Composable
-fun DeviceCard(result: ScanResult, index: Int, onClick: () -> Unit) {
+fun DeviceCard(
+    result: ScanResult,
+    index: Int,
+    customName: String?,
+    onClick: () -> Unit
+) {
     val rssi = result.rssi
-    val name = result.scanRecord?.deviceName ?: result.device.name ?: "Unknown Device"
+    val name = customName ?: result.scanRecord?.deviceName ?: result.device.name ?: "Unknown Device"
     val mac = result.device.address
+    val isBound = customName != null
     val signalColor = when {
         rssi > -60 -> SignalStrong
         rssi > -75 -> SignalMedium
@@ -407,19 +424,21 @@ fun DeviceCard(result: ScanResult, index: Int, onClick: () -> Unit) {
 
             Spacer(modifier = Modifier.width(14.dp))
 
-            // Name + MAC
+            // Name
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = name,
                     style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
+                    color = if (isBound) PrimaryGreen else TextPrimary,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "MAC: $mac",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextMuted
-                )
+                if (isBound) {
+                    Text(
+                        text = "Bound tag",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PrimaryGreen.copy(alpha = 0.6f)
+                    )
+                }
             }
 
             // RSSI + Signal bars
@@ -480,11 +499,15 @@ fun SignalBars(rssi: Int) {
 @Composable
 fun HaloTagRadarScreen(
     connState: String,
+    connectedMac: String,
     uwbData: UwbRealData,
     findingStatus: FindingStatus,
     debugLogs: List<String>,
+    tagBindings: List<TagBinding>,
     onStartFindingClick: () -> Unit,
-    onDisconnect: () -> Unit
+    onDisconnect: () -> Unit,
+    onConnectSavedDevice: (String) -> Unit,
+    onAddBinding: (mac: String, name: String) -> Unit
 ) {
     val isSuccess = findingStatus == FindingStatus.SUCCESS
     val isNearby = isSuccess && uwbData.distanceMeters <= 1.0f
@@ -523,6 +546,70 @@ fun HaloTagRadarScreen(
         animationSpec = tween(500, easing = EaseOutCubic),
         label = "radarScale"
     )
+
+    // Auto-dialog for first-time binding
+    val existingBinding = tagBindings.find { it.mac == connectedMac }
+    var showBindDialog by remember { mutableStateOf(false) }
+    var bindName by remember { mutableStateOf("") }
+
+    // Show dialog automatically if this MAC is not yet bound
+    LaunchedEffect(connectedMac) {
+        if (connectedMac.isNotEmpty() && existingBinding == null) {
+            showBindDialog = true
+        }
+    }
+
+    // Bind dialog
+    if (showBindDialog) {
+        AlertDialog(
+            onDismissRequest = { showBindDialog = false },
+            containerColor = CardDark,
+            title = {
+                Text("New Tag Found!", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "What is this tag attached to?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = bindName,
+                        onValueChange = { bindName = it },
+                        label = { Text("Item name", color = TextSecondary) },
+                        placeholder = { Text("e.g. My Keys, Wallet...", color = TextMuted) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = PrimaryGreen,
+                            unfocusedBorderColor = TextMuted
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = bindName.trim().ifEmpty { "My Tag" }
+                        onAddBinding(connectedMac, name)
+                        showBindDialog = false
+                        bindName = ""
+                    }
+                ) {
+                    Text("Save", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBindDialog = false; bindName = "" }) {
+                    Text("Skip", color = TextSecondary)
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -613,7 +700,7 @@ fun HaloTagRadarScreen(
             // InfoCard
             item {
                 InfoCard(
-                    deviceName = "Halo Keyring",
+                    deviceName = existingBinding?.name ?: "Halo Tag",
                     uwbData = uwbData,
                     findingStatus = findingStatus
                 )
@@ -736,9 +823,30 @@ fun HaloTagRadarScreen(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            item { MyDeviceItem(name = "Halo Keyring", isCurrent = true, status = "Connected") }
-            item { MyDeviceItem(name = "Backpack", isCurrent = false, status = "Disconnected") }
-            item { MyDeviceItem(name = "Wallet", isCurrent = false, status = "Disconnected") }
+            if (tagBindings.isEmpty()) {
+                item {
+                    Text(
+                        text = "No saved tags. Scan and tap ＋ to bind a tag.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
+                }
+            } else {
+                for (binding in tagBindings) {
+                    val isConnected = binding.mac == connectedMac
+                    item {
+                        MyDeviceItem(
+                            name = binding.name,
+                            isCurrent = isConnected,
+                            status = "",
+                            onClick = {
+                                if (!isConnected) onConnectSavedDevice(binding.mac)
+                            }
+                        )
+                    }
+                }
+            }
 
             item { Spacer(modifier = Modifier.height(32.dp)) }
         }
@@ -1214,10 +1322,31 @@ fun DebugLogPanel(logs: List<String>) {
 
 // ---- MyDeviceItem (Section 6.9) ----
 
+private fun itemIcon(name: String): String {
+    val lower = name.lowercase()
+    return when {
+        "key" in lower || "钥匙" in lower -> "🔑"
+        "wallet" in lower || "钱包" in lower -> "👛"
+        "backpack" in lower || "背包" in lower || "bag" in lower -> "🎒"
+        "car" in lower || "车" in lower -> "🚗"
+        "phone" in lower || "手机" in lower -> "📱"
+        "watch" in lower || "手表" in lower -> "⌚"
+        "glass" in lower || "眼镜" in lower -> "👓"
+        "umbrella" in lower || "伞" in lower -> "☂️"
+        "bike" in lower || "自行车" in lower -> "🚲"
+        "luggage" in lower || "行李" in lower -> "🧳"
+        "cat" in lower || "猫" in lower -> "🐱"
+        "dog" in lower || "狗" in lower -> "🐶"
+        "headphone" in lower || "耳机" in lower -> "🎧"
+        "book" in lower || "书" in lower -> "📖"
+        "remote" in lower || "遥控" in lower -> "📡"
+        else -> "🏷️"
+    }
+}
+
 @Composable
-fun MyDeviceItem(name: String, isCurrent: Boolean, status: String) {
+fun MyDeviceItem(name: String, isCurrent: Boolean, status: String, onClick: () -> Unit = {}) {
     val bgColor = if (isCurrent) CardGlass else CardDark
-    val statusColor = if (isCurrent) StatusNear else TextMuted
     val dotColor = if (isCurrent) StatusDotGreen else Color(0xFF2A332F)
     val shadowElevation = if (isCurrent) 2.dp else 0.dp
 
@@ -1225,29 +1354,45 @@ fun MyDeviceItem(name: String, isCurrent: Boolean, status: String) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp, vertical = 4.dp)
-            .shadow(shadowElevation, RoundedCornerShape(14.dp)),
+            .shadow(shadowElevation, RoundedCornerShape(14.dp))
+            .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = bgColor)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.titleSmall,
-                color = TextPrimary,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = status,
-                style = MaterialTheme.typography.labelSmall,
-                color = statusColor
-            )
-            Spacer(modifier = Modifier.width(8.dp))
+            // Item icon
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF0F1A15)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(text = itemIcon(name), fontSize = 18.sp)
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = if (isCurrent) "Connected" else "Tap to connect",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isCurrent) StatusNear else TextMuted
+                )
+            }
+
+            // Status dot
             Box(
                 modifier = Modifier
                     .size(8.dp)
