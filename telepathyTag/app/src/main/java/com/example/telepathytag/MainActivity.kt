@@ -678,6 +678,7 @@ fun HaloTagRadarScreen(
 
             // ---- MAIN ACTION BUTTON (state-dependent, primary CTA) ----
             item {
+                val isSuccessState = findingStatus == FindingStatus.SUCCESS
                 val mainBtnColor = when (findingStatus) {
                     FindingStatus.SUCCESS -> PrimaryGreen
                     FindingStatus.FAILED, FindingStatus.TIMEOUT, FindingStatus.UWB_ERROR -> StatusLost
@@ -690,7 +691,7 @@ fun HaloTagRadarScreen(
                     FindingStatus.BOARD_STARTING -> "Waiting for board startup..."
                     FindingStatus.BOARD_STARTED -> "Board Ready: Restart"
                     FindingStatus.RANGING -> "Waiting for UWB result..."
-                    FindingStatus.SUCCESS -> String.format("%.2f m  — Re-Range", uwbData.distanceMeters)
+                    FindingStatus.SUCCESS -> String.format("✅ Found It!  (%.1f m)", uwbData.distanceMeters)
                     FindingStatus.FAILED -> "Write Failed: Retry"
                     FindingStatus.TIMEOUT -> "ACK Timeout: Retry"
                     FindingStatus.UWB_ERROR -> "Range Failed: Retry"
@@ -705,7 +706,9 @@ fun HaloTagRadarScreen(
                         .background(
                             if (isFinding) SurfaceDark else mainBtnColor
                         )
-                        .clickable(enabled = !isFinding) { onStartFindingClick() }
+                        .clickable(enabled = !isFinding) {
+                            if (isSuccessState) onDisconnect() else onStartFindingClick()
+                        }
                         .height(56.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -716,7 +719,7 @@ fun HaloTagRadarScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(20.dp))
             }
 
             // MY DEVICES section
