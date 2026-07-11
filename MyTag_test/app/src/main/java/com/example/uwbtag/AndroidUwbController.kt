@@ -21,6 +21,10 @@ class AndroidUwbController(
     private var uwbManager: UwbManager? = null
     private var controllerSessionScope: UwbControllerSessionScope? = null
     private var rangingJob: Job? = null
+    private var filteredElevationDegrees: Float? = null
+    private var lockedElevationSign: Int = 0
+    private var pendingElevationSign: Int = 0
+    private var pendingElevationSignCount: Int = 0
 
     suspend fun prepareOobSession(): UwbOobSession {
         log("🧪 创建 UwbManager...")
@@ -89,6 +93,7 @@ class AndroidUwbController(
         rangingJob = null
         controllerSessionScope = null
         uwbManager = null
+        resetElevationFilter()
     }
 
     private fun handleRangingResult(result: RangingResult) {
@@ -99,10 +104,26 @@ class AndroidUwbController(
             is RangingResult.RangingResultPosition -> {
                 val distanceMeters = result.position.distance?.value ?: 0.0f
                 val azimuthDegrees = result.position.azimuth?.value ?: 0.0f
-                onPosition(UwbRealData(distanceMeters, azimuthDegrees))
+                val elevation = result.position.elevation
+                val rawElevationDegrees = elevation?.value
+                val filteredElevation = filterElevation(rawElevationDegrees)
+                val uwbData = UwbRealData(
+                    distanceMeters = distanceMeters,
+                    azimuthDegrees = azimuthDegrees,
+                    elevationDegrees = filteredElevation ?: 0.0f,
+                    hasElevation = filteredElevation != null
+                )
+                onPosition(uwbData)
                 log(
                     "🎯【Android UWB】距离=${String.format("%.2f", distanceMeters)}m, " +
-                        "方位=${String.format("%.1f", azimuthDegrees)}°"
+                        "方位=${String.format("%.1f", azimuthDegrees)}°, " +
+                        if (filteredElevation != null && rawElevationDegrees != null) {
+                            "俯仰=${String.format("%.1f", filteredElevation)}°" +
+                                "(raw=${String.format("%.1f", rawElevationDegrees)}°), " +
+                                "相对高度=${String.format("%.2f", uwbData.relativeHeightMeters)}m"
+                        } else {
+                            "俯仰=不可用"
+                        }
                 )
             }
             is RangingResult.RangingResultPeerDisconnected -> {
@@ -112,5 +133,68 @@ class AndroidUwbController(
                 onError("Android UWB ranging failure: $result")
             }
         }
+    }
+
+    private fun filterElevation(rawDegrees: Float?): Float? {
+        if (rawDegrees == null) {
+            return filteredElevationDegrees
+        }
+
+        val boundedRaw = rawDegrees.coerceIn(-85.0f, 85.0f)
+        val previous = filteredElevationDegrees
+
+        if (previous == null) {
+            filteredElevationDegrees = boundedRaw
+            lockedElevationSign = elevationSign(boundedRaw)
+            pendingElevationSign = 0
+            pendingElevationSignCount = 0
+            return boundedRaw
+        }
+
+        val rawSign = elevationSign(boundedRaw)
+        if (rawSign != 0 && lockedElevationSign != 0 && rawSign != lockedElevationSign) {
+            if (pendingElevationSign == rawSign) {
+                pendingElevationSignCount += 1
+            } else {
+                pendingElevationSign = rawSign
+                pendingElevationSignCount = 1
+            }
+            if (pendingElevationSignCount < 3) {
+                return previous
+            }
+            lockedElevationSign = rawSign
+            pendingElevationSign = 0
+            pendingElevationSignCount = 0
+        } else if (rawSign != 0) {
+            lockedElevationSign = rawSign
+            pendingElevationSign = 0
+            pendingElevationSignCount = 0
+        }
+
+        val jump = kotlin.math.abs(boundedRaw - previous)
+        val alpha = when {
+            kotlin.math.abs(rawDegrees) >= 88.0f -> 0.12f
+            jump > 45.0f -> 0.18f
+            jump > 25.0f -> 0.28f
+            else -> 0.38f
+        }
+        val filtered = previous + (boundedRaw - previous) * alpha
+        filteredElevationDegrees = filtered
+        return filtered
+    }
+
+    private fun elevationSign(value: Float): Int {
+        return when {
+            value > 8.0f -> 1
+            value < -8.0f -> -1
+            else -> 0
+        }
+    }
+
+    private fun resetElevationFilter() {
+        filteredElevationDegrees = null
+        lockedElevationSign = 0
+        pendingElevationSign = 0
+        pendingElevationSignCount = 0
     }
 }

@@ -37,8 +37,24 @@ enum class FindingStatus {
 // 🎯 测距数据结构（临时用于 Mock 驱动 UI 大箭头扩散动画）
 data class UwbRealData(
     val distanceMeters: Float,
-    val azimuthDegrees: Float
-)
+    val azimuthDegrees: Float,
+    val elevationDegrees: Float = 0f,
+    val hasElevation: Boolean = false
+) {
+    val relativeHeightMeters: Float
+        get() = if (hasElevation) {
+            (distanceMeters * kotlin.math.sin(Math.toRadians(elevationDegrees.toDouble()))).toFloat()
+        } else {
+            0f
+        }
+
+    val horizontalDistanceMeters: Float
+        get() = if (hasElevation) {
+            (distanceMeters * kotlin.math.cos(Math.toRadians(elevationDegrees.toDouble()))).toFloat()
+        } else {
+            distanceMeters
+        }
+}
 
 class UwbBleManager(private val context: Context) {
 

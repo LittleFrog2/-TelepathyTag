@@ -36,10 +36,10 @@ import androidx.compose.runtime.* // 💡 确保 runtime 的  delegation 正常�
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -193,6 +193,15 @@ fun AirTagRadarScreen(
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
         label = "Angle"
     )
+    val animatedElevation by animateFloatAsState(
+        targetValue = if (findingStatus == FindingStatus.SUCCESS && uwbData.hasElevation) {
+            (uwbData.elevationDegrees * 0.65f).coerceIn(-28.0f, 28.0f)
+        } else {
+            0.0f
+        },
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "Elevation"
+    )
 
     val targetBgColor = when (findingStatus) {
                     FindingStatus.SUCCESS -> Color(0xFF00E676)
@@ -222,9 +231,12 @@ fun AirTagRadarScreen(
                 contentAlignment = Alignment.Center
             ) {
                 if (findingStatus == FindingStatus.SUCCESS) {
-                    Box(modifier = Modifier.fillMaxSize().rotate(animatedAngle), contentAlignment = Alignment.Center) {
-                        ArrowPointer(modifier = Modifier.size(100.dp))
-                    }
+                    SpatialRadarTarget(
+                        azimuthDegrees = animatedAngle,
+                        elevationDegrees = animatedElevation,
+                        hasElevation = uwbData.hasElevation,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 } else if (
                     findingStatus == FindingStatus.SENDING ||
                     findingStatus == FindingStatus.BOARD_STARTING ||
@@ -256,6 +268,13 @@ fun AirTagRadarScreen(
                 fontWeight = FontWeight.Black
             )
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            RangingMetricsRow(
+                uwbData = uwbData,
+                isActive = findingStatus == FindingStatus.SUCCESS
+            )
+
             Text(
                 text = when (findingStatus) {
                     FindingStatus.IDLE -> "请点击下方按钮发送 Android START_SESSION 参数"
@@ -263,7 +282,15 @@ fun AirTagRadarScreen(
                     FindingStatus.BOARD_STARTING -> "Android UWB backend 不可用或未使用，正在等待板端 FiRa 启动诊断"
                     FindingStatus.BOARD_STARTED -> "板端 FiRa responder 已启动；当前为板端验证模式，不显示手机 UWB 距离"
                     FindingStatus.RANGING -> "手机已启动 Jetpack UWB ranging，等待 RangingResult"
-                    FindingStatus.SUCCESS -> "距离/方向来自 Android UWB ranging result"
+                    FindingStatus.SUCCESS -> if (uwbData.hasElevation) {
+                        String.format(
+                            "3D 箭头使用滤波俯仰角；原始值仍在下方日志中\n俯仰 %.1f°，空间距离 %.2f 米",
+                            uwbData.elevationDegrees,
+                            uwbData.distanceMeters
+                        )
+                    } else {
+                        "距离/方向来自 Android UWB ranging result\n当前设备或会话未返回俯仰角"
+                    }
                     FindingStatus.FAILED -> "Android协议栈拒绝，请重启蓝牙重试"
                     FindingStatus.TIMEOUT -> "板子没有回传 OOB ACK，请检查固件版本和 Notify 通道"
                     FindingStatus.UWB_ERROR -> "OOB 已通过，UWB 空口失败；请查看下方诊断码"
@@ -315,6 +342,44 @@ fun AirTagRadarScreen(
 }
 
 @Composable
+fun RangingMetricsRow(uwbData: UwbRealData, isActive: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RangingMetric(
+            value = if (isActive) String.format("%.2fm", uwbData.horizontalDistanceMeters) else "-",
+            label = "水平距离",
+            color = Color(0xFF40C4FF)
+        )
+        RangingMetric(
+            value = if (isActive) String.format("%.1f°", uwbData.azimuthDegrees) else "-",
+            label = "方位角",
+            color = Color(0xFF00E676)
+        )
+        RangingMetric(
+            value = if (isActive && uwbData.hasElevation) String.format("%+.2fm", uwbData.relativeHeightMeters) else "-",
+            label = "高度差",
+            color = when {
+                !isActive || !uwbData.hasElevation -> Color(0xFFB0BEC5)
+                uwbData.relativeHeightMeters > 0.08f -> Color(0xFF40C4FF)
+                uwbData.relativeHeightMeters < -0.08f -> Color(0xFFFFAB40)
+                else -> Color.White
+            }
+        )
+    }
+}
+
+@Composable
+fun RangingMetric(value: String, label: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text = value, color = color, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(text = label, color = Color(0xFF8A948F), fontSize = 12.sp)
+    }
+}
+
+@Composable
 fun DebugLogPanel(logs: List<String>) {
     Surface(
         modifier = Modifier
@@ -340,8 +405,89 @@ fun DebugLogPanel(logs: List<String>) {
 }
 
 @Composable
-fun ArrowPointer(modifier: Modifier = Modifier) {
+fun SpatialRadarTarget(
+    azimuthDegrees: Float,
+    elevationDegrees: Float,
+    hasElevation: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val heightColor = when {
+        !hasElevation -> Color(0xFFECEFF1)
+        elevationDegrees > 8.0f -> Color(0xFF40C4FF)
+        elevationDegrees < -8.0f -> Color(0xFFFFAB40)
+        else -> Color.White
+    }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = androidx.compose.ui.geometry.Offset(size.width / 2.0f, size.height / 2.0f)
+            drawCircle(
+                color = Color(0x3300B0FF),
+                radius = size.minDimension * 0.36f,
+                center = center
+            )
+            drawCircle(
+                color = Color(0x22000000),
+                radius = size.minDimension * 0.24f,
+                center = androidx.compose.ui.geometry.Offset(center.x, center.y + size.height * 0.20f)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .size(142.dp)
+                .graphicsLayer {
+                    cameraDistance = 9.0f * density
+                    rotationZ = azimuthDegrees
+                    rotationX = -elevationDegrees * 0.85f
+                    rotationY = elevationDegrees * 0.18f
+                    translationY = -elevationDegrees * density * 0.22f
+                    shadowElevation = 18.0f
+                    scaleX = 1.0f + kotlin.math.abs(elevationDegrees) / 360.0f
+                    scaleY = 1.0f - kotlin.math.abs(elevationDegrees) / 620.0f
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            ArrowPointer(
+                modifier = Modifier.fillMaxSize(),
+                accentColor = heightColor
+            )
+        }
+
+        if (hasElevation) {
+            val markerOffset = (-elevationDegrees).coerceIn(-58.0f, 58.0f)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 30.dp)
+                    .width(5.dp)
+                    .height(118.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0x3340C4FF))
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 25.dp)
+                    .offset(y = markerOffset.dp)
+                    .size(15.dp)
+                    .clip(CircleShape)
+                    .background(heightColor)
+            )
+        }
+    }
+}
+
+@Composable
+fun ArrowPointer(modifier: Modifier = Modifier, accentColor: Color = Color.White) {
     Canvas(modifier = modifier) {
+        val shadow = Path().apply {
+            moveTo(size.width / 2, size.height * 0.07f)
+            lineTo(size.width * 0.93f, size.height * 0.88f)
+            lineTo(size.width * 0.5f, size.height * 0.69f)
+            lineTo(size.width * 0.07f, size.height * 0.88f)
+            close()
+        }
         val path = Path().apply {
             moveTo(size.width / 2, 0f)
             lineTo(size.width, size.height * 0.85f)
@@ -349,7 +495,11 @@ fun ArrowPointer(modifier: Modifier = Modifier) {
             lineTo(0f, size.height * 0.85f)
             close()
         }
-        drawPath(path = path, brush = Brush.verticalGradient(colors = listOf(Color.White, Color(0xFFECEFF1))))
+        drawPath(path = shadow, color = Color(0x66000000))
+        drawPath(
+            path = path,
+            brush = Brush.verticalGradient(colors = listOf(Color.White, accentColor, Color(0xFFECEFF1)))
+        )
     }
 }
 
