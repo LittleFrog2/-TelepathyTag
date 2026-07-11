@@ -82,6 +82,7 @@ class UwbBleManager(private val context: Context) {
             log = ::logToUi,
             onPosition = { uwbData ->
                 mainHandler.removeCallbacks(timeoutRunnable)
+                timeoutRetryCount = 0
                 _uwbDataFlow.tryEmit(uwbData)
                 _findingStatus.value = FindingStatus.SUCCESS
             },
@@ -92,20 +93,31 @@ class UwbBleManager(private val context: Context) {
         )
     }
 
+    private var timeoutRetryCount = 0
+    private val maxTimeoutRetries = 3
+
     private val timeoutRunnable = Runnable {
         if (
             _findingStatus.value == FindingStatus.SENDING ||
             _findingStatus.value == FindingStatus.BOARD_STARTING ||
             _findingStatus.value == FindingStatus.RANGING
         ) {
-            _findingStatus.value = FindingStatus.TIMEOUT
-            androidUwbController.stop()
-            val mode = if (pendingOobSession?.isAndroidUwbSessionBacked == true) {
-                "Android UWB ranging 结果"
+            if (timeoutRetryCount < maxTimeoutRetries) {
+                timeoutRetryCount++
+                logToUi("⏱️ ACK 超时，自动重试 ($timeoutRetryCount/$maxTimeoutRetries)...")
+                androidUwbController.stop()
+                sendStartFindingCmd()
             } else {
-                "板端 ACK/启动诊断"
+                _findingStatus.value = FindingStatus.TIMEOUT
+                androidUwbController.stop()
+                timeoutRetryCount = 0
+                val mode = if (pendingOobSession?.isAndroidUwbSessionBacked == true) {
+                    "Android UWB ranging 结果"
+                } else {
+                    "板端 ACK/启动诊断"
+                }
+                logToUi("❌ 超时反馈：OOB 已写入，但 15 秒内没有收到 $mode（已重试 $maxTimeoutRetries 次）")
             }
-            logToUi("❌ 超时反馈：OOB 已写入，但 15 秒内没有收到 $mode")
         }
     }
 
@@ -177,6 +189,7 @@ class UwbBleManager(private val context: Context) {
 
     fun resetFindingStatus() {
         mainHandler.removeCallbacks(timeoutRunnable)
+        timeoutRetryCount = 0
         androidUwbController.stop()
         _findingStatus.value = FindingStatus.IDLE
     }
@@ -451,6 +464,7 @@ class UwbBleManager(private val context: Context) {
 
             mainHandler.post {
                 mainHandler.removeCallbacks(timeoutRunnable)
+                timeoutRetryCount = 0
                 _uwbDataFlow.tryEmit(UwbRealData(distanceMeters, azimuthDeg.toFloat()))
                 _findingStatus.value = FindingStatus.SUCCESS
             }
@@ -804,6 +818,7 @@ class UwbBleManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        timeoutRetryCount = 0
         _connectionState.value = "未连接"
         _connectedMac.value = ""
         isGattReady = false

@@ -21,7 +21,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.EaseInOutCubic
 import androidx.compose.animation.core.EaseOutCubic
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
@@ -55,7 +57,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.rotate as rotateDraw
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -65,6 +69,37 @@ import androidx.core.content.ContextCompat
 import com.example.telepathytag.ui.theme.*
 import java.util.UUID
 import kotlin.math.*
+import kotlin.random.Random
+
+// ============================================================
+// Particle Data for Precision Finding (State 1)
+// ============================================================
+private data class FinderParticle(
+    val orbitRadius: Float,  // radial distance from center (fraction of canvas radius)
+    val angle: Float,        // starting angular position (radians)
+    val size: Float,         // dot size in dp
+    val phase: Float,        // alpha animation phase offset
+    val speed: Float,        // orbital angular speed multiplier
+    val direction: Float,    // +1.0 = clockwise, -1.0 = counter-clockwise
+    val arcFraction: Float   // position along the arc (0.0–1.0) for convergence
+)
+
+private fun generateFinderParticles(count: Int, maxRadiusFraction: Float): List<FinderParticle> {
+    return List(count) {
+        val angle = Random.nextFloat() * 2f * PI.toFloat()
+        // All particles near the edge (outer 20% of radius)
+        val orbitRadius = maxRadiusFraction * (0.80f + Random.nextFloat() * 0.20f)
+        FinderParticle(
+            orbitRadius = orbitRadius,
+            angle = angle,
+            size = Random.nextFloat() * 2.5f + 1.2f,
+            phase = Random.nextFloat() * 2f * PI.toFloat(),
+            speed = 0.1f + Random.nextFloat() * 0.4f,   // slower, gentle orbit
+            direction = if (Random.nextBoolean()) 1f else -1f,  // random CW or CCW
+            arcFraction = Random.nextFloat()  // random position along the arc
+        )
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val qnisServiceUuid = UUID.fromString("2E938FD0-6A61-11ED-A1EB-0242AC120002")
@@ -516,7 +551,25 @@ fun HaloTagRadarScreen(
         FindingStatus.BOARD_STARTED, FindingStatus.RANGING
     )
     val isError = findingStatus in setOf(FindingStatus.FAILED, FindingStatus.TIMEOUT, FindingStatus.UWB_ERROR)
+
+    // Precision finding alignment states
+    val isAligned = isSuccess && abs(uwbData.azimuthDegrees) <= 15f
+    val isGuided = isSuccess && !isAligned
+
     val isFinding = findingStatus == FindingStatus.SENDING
+
+    // Animated background color based on finding state
+    val backgroundColor by animateColorAsState(
+        targetValue = when {
+            isAligned -> AlignedGreenBg
+            isGuided -> GuidedBgBlack
+            isSearching -> SearchBgDark
+            isError -> BackgroundBlack
+            else -> BackgroundBlack
+        },
+        animationSpec = tween(700, easing = EaseInOutCubic),
+        label = "bgColor"
+    )
 
     // Secondary button scale animations
     val playScale by animateFloatAsState(
@@ -528,23 +581,6 @@ fun HaloTagRadarScreen(
         targetValue = if (isFinding) 0.97f else 1.0f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "dirScale"
-    )
-
-    // Arrow rotation animation
-    val animatedAngle by animateFloatAsState(
-        targetValue = if (isSuccess) uwbData.azimuthDegrees else 0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "arrowAngle"
-    )
-
-    // Radar scale animation
-    val radarScale by animateFloatAsState(
-        targetValue = if (isSuccess) 1.0f else 0.95f,
-        animationSpec = tween(500, easing = EaseOutCubic),
-        label = "radarScale"
     )
 
     // Auto-dialog for first-time binding
@@ -611,244 +647,221 @@ fun HaloTagRadarScreen(
         )
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(backgroundColor)
     ) {
-        // ---- Top Bar ----
-        TopBar(connState = connState, onDisconnect = onDisconnect)
-
-        // ---- Scrollable Content ----
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            contentPadding = PaddingValues(vertical = 16.dp)
+        Column(
+            modifier = Modifier.fillMaxSize()
         ) {
-            // Radar Display
-            item {
-                Box(
-                    modifier = Modifier
-                        .size(260.dp)
-                        .scale(radarScale),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val isActive = isSearching || isSuccess
-                    val pulseFast = isNearby
-                    RadarDisplay(isActive = isActive, pulseFast = pulseFast)
+            // ---- Scrollable Content ----
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                contentPadding = PaddingValues(vertical = 16.dp)
+            ) {
+                // Precision Finding Display
+                item {
+                    Box(
+                        modifier = Modifier
+                            .size(300.dp)
+                            .padding(top = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PrecisionFindingDisplay(
+                            isSearching = isSearching,
+                            isGuided = isGuided,
+                            isAligned = isAligned,
+                            azimuthDegrees = uwbData.azimuthDegrees,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
 
-                    // Arrow or icon overlay
-                    when {
-                        isSuccess -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .rotate(animatedAngle),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                ArrowPointer(modifier = Modifier.size(100.dp))
-                            }
-                        }
-                        isSearching -> {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(40.dp),
-                                color = PrimaryGreen,
-                                strokeWidth = 3.dp
-                            )
-                        }
-                        isError -> {
-                            Text("🔑", fontSize = 40.sp)
-                        }
-                        else -> {
-                            Text("🔑", fontSize = 40.sp)
-                        }
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Status label
+                    val statusLabel = when {
+                        isAligned -> "FOUND"
+                        isGuided -> "GUIDING"
+                        isSearching -> "SEARCHING..."
+                        isError -> "ERROR"
+                        else -> "READY"
+                    }
+                    val statusColor = when {
+                        isAligned -> Color.White
+                        isGuided -> PrimaryGreen
+                        isSearching -> PrimaryGreen
+                        isError -> StatusLost
+                        else -> TextMuted
+                    }
+                    Text(
+                        text = statusLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = statusColor,
+                        letterSpacing = 3.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Distance and Direction Display
+                if (isSuccess) {
+                    item {
+                        PrecisionDataDisplay(
+                            uwbData = uwbData,
+                            isNearby = isNearby,
+                            isAligned = isAligned
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                // (InfoCard removed)
 
-                // Status text
-                val statusLabel = when {
-                    findingStatus == FindingStatus.IDLE -> "READY"
-                    isSearching -> "SEARCHING..."
-                    isNearby -> "NEARBY"
-                    isSuccess -> "TRACKING"
-                    findingStatus == FindingStatus.FAILED -> "WRITE ERROR"
-                    else -> "TIMEOUT"
-                }
-                val statusColor = when {
-                    isNearby || isSuccess -> PrimaryGreen
-                    isError -> StatusLost
-                    else -> TextMuted
-                }
-                Text(
-                    text = statusLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = statusColor,
-                    letterSpacing = 3.sp
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            // Data Display (distance / angle / direction)
-            if (isSuccess) {
+                // Action Buttons (Play Sound + Direction — secondary)
                 item {
-                    DataDisplay(uwbData = uwbData, isNearby = isNearby)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Play Sound
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .scale(playScale)
+                                .shadow(6.dp, RoundedCornerShape(18.dp))
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(ButtonDarkStart, ButtonDarkEnd)
+                                    )
+                                )
+                                .clickable(enabled = !isFinding) { onStartFindingClick() }
+                                .height(56.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "🔊 Play Sound",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White
+                            )
+                        }
+                        // Direction
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .scale(dirScale)
+                                .shadow(6.dp, RoundedCornerShape(18.dp))
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(ButtonDarkStart, ButtonDarkEnd)
+                                    )
+                                )
+                                .clickable(enabled = !isFinding) { onStartFindingClick() }
+                                .height(56.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "🧭 Direction",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Color.White
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // ---- MAIN ACTION BUTTON (state-dependent, primary CTA) ----
+                item {
+                    val isSuccessState = findingStatus == FindingStatus.SUCCESS
+                    val mainBtnColor = when (findingStatus) {
+                        FindingStatus.SUCCESS -> PrimaryGreen
+                        FindingStatus.FAILED, FindingStatus.TIMEOUT, FindingStatus.UWB_ERROR -> StatusLost
+                        FindingStatus.BOARD_STARTED -> Color(0xFF607D8B)
+                        else -> PrimaryGreen
+                    }
+                    val mainBtnText = when (findingStatus) {
+                        FindingStatus.IDLE -> "Start Finding"
+                        FindingStatus.SENDING -> "Waiting for OOB ACK..."
+                        FindingStatus.BOARD_STARTING -> "Waiting for board startup..."
+                        FindingStatus.BOARD_STARTED -> "Board Ready: Restart"
+                        FindingStatus.RANGING -> "Waiting for UWB result..."
+                        FindingStatus.SUCCESS -> String.format("✅ Found It!  (%.1f m)", uwbData.distanceMeters)
+                        FindingStatus.FAILED -> "Write Failed: Retry"
+                        FindingStatus.TIMEOUT -> "ACK Timeout: Retry"
+                        FindingStatus.UWB_ERROR -> "Range Failed: Retry"
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp)
+                            .shadow(8.dp, RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isFinding) SurfaceDark else mainBtnColor
+                            )
+                            .clickable(enabled = !isFinding) {
+                                if (isSuccessState) onDisconnect() else onStartFindingClick()
+                            }
+                            .height(56.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = mainBtnText,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     Spacer(modifier = Modifier.height(20.dp))
                 }
-            }
 
-            // InfoCard
-            item {
-                InfoCard(
-                    deviceName = existingBinding?.name ?: "Halo Tag",
-                    uwbData = uwbData,
-                    findingStatus = findingStatus
-                )
-                Spacer(modifier = Modifier.height(20.dp))
-            }
-
-            // Action Buttons (Play Sound + Direction — secondary)
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Play Sound
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .scale(playScale)
-                            .shadow(6.dp, RoundedCornerShape(18.dp))
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(
-                                brush = Brush.horizontalGradient(
-                                    colors = listOf(ButtonGreenStart, ButtonGreenEnd)
-                                )
-                            )
-                            .clickable(enabled = !isFinding) { onStartFindingClick() }
-                            .height(56.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "🔊 Play Sound",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
-                        )
-                    }
-                    // Direction
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .scale(dirScale)
-                            .shadow(6.dp, RoundedCornerShape(18.dp))
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(
-                                brush = Brush.horizontalGradient(
-                                    colors = listOf(ButtonDarkStart, ButtonDarkEnd)
-                                )
-                            )
-                            .clickable(enabled = !isFinding) { onStartFindingClick() }
-                            .height(56.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "🧭 Direction",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = Color.White
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            // ---- MAIN ACTION BUTTON (state-dependent, primary CTA) ----
-            item {
-                val isSuccessState = findingStatus == FindingStatus.SUCCESS
-                val mainBtnColor = when (findingStatus) {
-                    FindingStatus.SUCCESS -> PrimaryGreen
-                    FindingStatus.FAILED, FindingStatus.TIMEOUT, FindingStatus.UWB_ERROR -> StatusLost
-                    FindingStatus.BOARD_STARTED -> Color(0xFF607D8B)
-                    else -> PrimaryGreen
-                }
-                val mainBtnText = when (findingStatus) {
-                    FindingStatus.IDLE -> "Start Finding"
-                    FindingStatus.SENDING -> "Waiting for OOB ACK..."
-                    FindingStatus.BOARD_STARTING -> "Waiting for board startup..."
-                    FindingStatus.BOARD_STARTED -> "Board Ready: Restart"
-                    FindingStatus.RANGING -> "Waiting for UWB result..."
-                    FindingStatus.SUCCESS -> String.format("✅ Found It!  (%.1f m)", uwbData.distanceMeters)
-                    FindingStatus.FAILED -> "Write Failed: Retry"
-                    FindingStatus.TIMEOUT -> "ACK Timeout: Retry"
-                    FindingStatus.UWB_ERROR -> "Range Failed: Retry"
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .shadow(8.dp, RoundedCornerShape(14.dp))
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(
-                            if (isFinding) SurfaceDark else mainBtnColor
-                        )
-                        .clickable(enabled = !isFinding) {
-                            if (isSuccessState) onDisconnect() else onStartFindingClick()
-                        }
-                        .height(56.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = mainBtnText,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-                Spacer(modifier = Modifier.height(20.dp))
-            }
-
-            // MY DEVICES section
-            item {
-                Text(
-                    text = "MY DEVICES",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted,
-                    letterSpacing = 1.5.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            if (tagBindings.isEmpty()) {
+                // MY DEVICES section
                 item {
                     Text(
-                        text = "No saved tags. Scan and tap ＋ to bind a tag.",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "MY DEVICES",
+                        style = MaterialTheme.typography.labelSmall,
                         color = TextMuted,
-                        modifier = Modifier.padding(horizontal = 24.dp)
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp)
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
-            } else {
-                for (binding in tagBindings) {
-                    val isConnected = binding.mac == connectedMac
+
+                if (tagBindings.isEmpty()) {
                     item {
-                        MyDeviceItem(
-                            name = binding.name,
-                            isCurrent = isConnected,
-                            status = "",
-                            onClick = {
-                                if (!isConnected) onConnectSavedDevice(binding.mac)
-                            }
+                        Text(
+                            text = "No saved tags. Scan and tap ＋ to bind a tag.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted,
+                            modifier = Modifier.padding(horizontal = 24.dp)
                         )
                     }
+                } else {
+                    for (binding in tagBindings) {
+                        val isConnected = binding.mac == connectedMac
+                        item {
+                            MyDeviceItem(
+                                name = binding.name,
+                                isCurrent = isConnected,
+                                status = "",
+                                onClick = {
+                                    if (!isConnected) onConnectSavedDevice(binding.mac)
+                                }
+                            )
+                        }
+                    }
                 }
-            }
 
-            item { Spacer(modifier = Modifier.height(32.dp)) }
+                item { Spacer(modifier = Modifier.height(32.dp)) }
+            }
         }
     }
 }
@@ -916,250 +929,439 @@ fun TopBar(connState: String, onDisconnect: () -> Unit) {
     }
 }
 
-// ---- Radar Display (Section 6.4) ----
+// ============================================================
+// PRECISION FINDING DISPLAY (Section 6.4 - Redesigned)
+// Three states: Searching (particles), Guided (arc + arrow), Aligned (green)
+// ============================================================
 
 @Composable
-fun RadarDisplay(isActive: Boolean, pulseFast: Boolean) {
-    val infiniteTransition = rememberInfiniteTransition(label = "radar")
+fun PrecisionFindingDisplay(
+    isSearching: Boolean,
+    isGuided: Boolean,
+    isAligned: Boolean,
+    azimuthDegrees: Float,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "precisionFinder")
 
-    // Scan arc rotation
-    val scanAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2400, easing = androidx.compose.animation.core.LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "scanArc"
+    // Continuous elapsed time for particle orbital motion
+    var elapsedTime by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { nanos ->
+                if (lastNanos != 0L) {
+                    val dt = (nanos - lastNanos) / 1_000_000_000f
+                    elapsedTime += dt
+                }
+                lastNanos = nanos
+            }
+        }
+    }
+
+    // Transition: particles → arc (0 = full particles, 1 = full arc)
+    val guidedTransition by animateFloatAsState(
+        targetValue = if (isGuided || isAligned) 1f else 0f,
+        animationSpec = tween(650, easing = EaseInOutCubic),
+        label = "guidedTransition"
     )
 
-    // Pulse ripple 1
-    val pulseDuration = if (pulseFast) 1000 else 1800
-    val pulse1Radius by infiniteTransition.animateFloat(
-        initialValue = 0.15f,
+    // Breathing for aligned state
+    val breatheScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.07f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = EaseInOutCubic),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "breathe"
+    )
+
+    // Green glow ripple for aligned state
+    val rippleRadius by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
         targetValue = 0.95f,
         animationSpec = infiniteRepeatable(
-            animation = tween(pulseDuration, easing = EaseOutCubic),
+            animation = tween(1200, easing = EaseOutCubic),
             repeatMode = RepeatMode.Restart
         ),
-        label = "pulse1"
+        label = "ripple"
     )
-    val pulse1Alpha = (0.5f * (1f - pulse1Radius)).coerceIn(0f, 0.5f)
+    val rippleAlpha = (0.5f * (1f - rippleRadius)).coerceIn(0f, 0.5f)
 
-    // Pulse ripple 2 (offset by half period)
-    val pulse2Radius by infiniteTransition.animateFloat(
-        initialValue = 0.1f,
-        targetValue = 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(pulseDuration, easing = EaseOutCubic),
-            repeatMode = RepeatMode.Restart
+    // Smooth arrow rotation
+    val animatedAngle by animateFloatAsState(
+        targetValue = when {
+            isAligned -> 0f
+            isGuided -> azimuthDegrees
+            else -> 0f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessLow
         ),
-        label = "pulse2"
+        label = "arrowAngle"
     )
-    val pulse2Alpha = (0.45f * (1f - pulse2Radius)).coerceIn(0f, 0.45f)
 
-    val pulseColor = if (pulseFast) PrimaryGreen else AccentGreen
+    // Generate particles once
+    val particles = remember { generateFinderParticles(55, 0.82f) }
 
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        val center = Offset(size.width / 2, size.height / 2)
-        val maxRadius = size.minDimension / 2
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        // Background canvas layer
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2, size.height / 2)
+            val radius = size.minDimension / 2 - 4.dp.toPx()
 
-        // Background circle
-        drawCircle(
-            color = RadarBgCircle,
-            radius = maxRadius,
-            center = center
-        )
+            when {
+                isAligned -> {
+                    // Green glow background circle
+                    drawCircle(
+                        color = AlignedGreenBg.copy(alpha = 0.2f),
+                        radius = radius,
+                        center = center
+                    )
+                    // Outer ring
+                    drawCircle(
+                        color = AlignedGreenBg.copy(alpha = 0.5f),
+                        radius = radius,
+                        center = center,
+                        style = Stroke(width = 1.5.dp.toPx())
+                    )
+                    // Ripple effect
+                    drawCircle(
+                        color = Color.White.copy(alpha = rippleAlpha * 0.5f),
+                        radius = radius * rippleRadius,
+                        center = center,
+                        style = Stroke(width = 2.dp.toPx())
+                    )
+                    // Second ripple (offset phase)
+                    val ripple2Radius = ((rippleRadius + 0.5f) % 1f).coerceIn(0f, 1f)
+                    val ripple2Alpha = (0.5f * (1f - ripple2Radius)).coerceIn(0f, 0.5f) * 0.6f
+                    drawCircle(
+                        color = Color.White.copy(alpha = ripple2Alpha),
+                        radius = radius * ripple2Radius,
+                        center = center,
+                        style = Stroke(width = 1.5.dp.toPx())
+                    )
+                }
+                isGuided -> {
+                    // Dark background for guided state
+                    drawCircle(
+                        color = Color(0xFF0D1110),
+                        radius = radius,
+                        center = center
+                    )
+                    // Thin outer ring
+                    drawCircle(
+                        color = Color(0xFF1A3328),
+                        radius = radius,
+                        center = center,
+                        style = Stroke(width = 1.2.dp.toPx())
+                    )
 
-        // Outer ring
-        drawCircle(
-            color = Color(0xFF1A3328),
-            radius = maxRadius,
-            center = center,
-            style = Stroke(width = 1.5.dp.toPx())
-        )
+                    val arcStartAngle = -90f
+                    val sweepAngle = azimuthDegrees
 
-        // 3 concentric rings
-        for (i in 1..3) {
-            drawCircle(
-                color = RadarRingGreen,
-                radius = maxRadius * i / 3,
-                center = center,
-                style = Stroke(width = 0.5.dp.toPx())
-            )
+                    if (abs(sweepAngle) > 0.5f) {
+                        val arcEndAngle = arcStartAngle + sweepAngle
+                        val arcStartRad = Math.toRadians(arcStartAngle.toDouble()).toFloat()
+                        val arcEndRad = Math.toRadians(arcEndAngle.toDouble()).toFloat()
+
+                        // Wide soft glow arc underneath
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                0.0f to Color.White.copy(alpha = 0.3f),
+                                0.3f to Color.White.copy(alpha = 0.15f),
+                                1.0f to Color.Transparent
+                            ),
+                            startAngle = arcStartAngle,
+                            sweepAngle = sweepAngle,
+                            useCenter = false,
+                            topLeft = Offset(center.x - radius, center.y - radius),
+                            size = Size(radius * 2, radius * 2),
+                            style = Stroke(width = 10.dp.toPx(), cap = StrokeCap.Round)
+                        )
+
+                        // Solid arc line (fades in as particles converge)
+                        val arcAlpha = guidedTransition.coerceIn(0f, 1f)
+                        drawArc(
+                            color = Color.White.copy(alpha = arcAlpha),
+                            startAngle = arcStartAngle,
+                            sweepAngle = sweepAngle,
+                            useCenter = false,
+                            topLeft = Offset(center.x - radius, center.y - radius),
+                            size = Size(radius * 2, radius * 2),
+                            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+                        )
+
+                        // ---- Thick endpoint dots ----
+                        if (arcAlpha > 0.5f) {
+                            // Start point (top / user heading) — smaller
+                            val startX = center.x + cos(arcStartRad) * radius
+                            val startY = center.y + sin(arcStartRad) * radius
+                            drawCircle(
+                                color = Color.White.copy(alpha = arcAlpha * 0.7f),
+                                radius = 4.5.dp.toPx(),
+                                center = Offset(startX, startY)
+                            )
+                            drawCircle(
+                                color = Color.White.copy(alpha = arcAlpha),
+                                radius = 3.5.dp.toPx(),
+                                center = Offset(startX, startY)
+                            )
+
+                            // End point (tag direction) — larger & bolder
+                            val endX = center.x + cos(arcEndRad) * radius
+                            val endY = center.y + sin(arcEndRad) * radius
+                            drawCircle(
+                                color = Color.White.copy(alpha = arcAlpha * 0.8f),
+                                radius = 7.dp.toPx(),
+                                center = Offset(endX, endY)
+                            )
+                            drawCircle(
+                                color = Color.White.copy(alpha = arcAlpha),
+                                radius = 5.5.dp.toPx(),
+                                center = Offset(endX, endY)
+                            )
+                        }
+                    }
+
+                    // Converging particles — fade out as solid arc takes over
+                    val particleFade = (1f - guidedTransition * 1.15f).coerceIn(0f, 1f)
+                    if (particleFade > 0.03f) {
+                        val arcBaseRad = Math.toRadians(arcStartAngle.toDouble()).toFloat()
+                        val azimuthRad = Math.toRadians(azimuthDegrees.toDouble()).toFloat()
+                        particles.forEach { p ->
+                            // Orbital position
+                            val orbitAngle = p.angle + elapsedTime * p.speed * p.direction * 0.5f
+                            val orbitX = center.x + cos(orbitAngle) * radius * p.orbitRadius
+                            val orbitY = center.y + sin(orbitAngle) * radius * p.orbitRadius
+                            // Arc target
+                            val arcAngle = arcBaseRad + azimuthRad * p.arcFraction
+                            val arcX = center.x + cos(arcAngle) * radius * p.orbitRadius
+                            val arcY = center.y + sin(arcAngle) * radius * p.orbitRadius
+                            // Interpolate
+                            val px = orbitX + (arcX - orbitX) * guidedTransition
+                            val py = orbitY + (arcY - orbitY) * guidedTransition
+                            // Fade
+                            val alpha = particleFade * ((sin(elapsedTime * 2.5f + p.phase).toFloat() + 1f) / 4f + 0.15f)
+                            if (alpha > 0.03f) {
+                                drawCircle(
+                                    color = ParticleGlow.copy(alpha = alpha),
+                                    radius = p.size.dp.toPx(),
+                                    center = Offset(px, py)
+                                )
+                            }
+                        }
+                    }
+                }
+                isSearching -> {
+                    // Semi-dark circular area
+                    drawCircle(
+                        color = SearchBgDark.copy(alpha = 0.9f),
+                        radius = radius,
+                        center = center
+                    )
+                    // Faint outer ring
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.08f),
+                        radius = radius,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+
+                    // Draw orbiting particles along the circle edge
+                    particles.forEach { p ->
+                        // Slow orbital motion with random direction (CW or CCW)
+                        val currentAngle = p.angle + elapsedTime * p.speed * p.direction * 0.5f
+                        val px = center.x + cos(currentAngle) * radius * p.orbitRadius
+                        val py = center.y + sin(currentAngle) * radius * p.orbitRadius
+                        // Gentle breathing blink
+                        val alpha = (
+                            (sin(elapsedTime * 2.0f + p.phase).toFloat() + 1f) / 4f + 0.15f
+                        )
+                        if (alpha > 0.04f) {
+                            drawCircle(
+                                color = ParticleGlow.copy(alpha = alpha),
+                                radius = p.size.dp.toPx(),
+                                center = Offset(px, py)
+                            )
+                        }
+                    }
+
+                    // Subtle center glow
+                    drawCircle(
+                        color = PrimaryGreen.copy(alpha = 0.04f),
+                        radius = radius * 0.12f,
+                        center = center
+                    )
+                }
+                else -> {
+                    // Idle / error state
+                    drawCircle(
+                        color = Color(0xFF0F1A15),
+                        radius = radius,
+                        center = center
+                    )
+                    drawCircle(
+                        color = Color(0xFF1A3328),
+                        radius = radius,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+                }
+            }
         }
 
-        // Cross lines
-        val crossAlpha = 0.15f
-        drawLine(
-            color = Color.White.copy(alpha = crossAlpha),
-            start = Offset(center.x - maxRadius, center.y),
-            end = Offset(center.x + maxRadius, center.y),
-            strokeWidth = 0.5.dp.toPx()
-        )
-        drawLine(
-            color = Color.White.copy(alpha = crossAlpha),
-            start = Offset(center.x, center.y - maxRadius),
-            end = Offset(center.x, center.y + maxRadius),
-            strokeWidth = 0.5.dp.toPx()
-        )
-
-        // 12 tick marks
-        for (i in 0 until 12) {
-            val angleDeg = i * 30f
-            val isCardinal = i % 3 == 0
-            val tickLength = if (isCardinal) 12.dp.toPx() else 6.dp.toPx()
-            val tickColor = if (isCardinal) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.12f)
-            val tickWidth = if (isCardinal) 1.2.dp.toPx() else 0.6.dp.toPx()
-
-            val rad = Math.toRadians(angleDeg.toDouble())
-            val innerX = center.x + (maxRadius - tickLength) * cos(rad).toFloat()
-            val innerY = center.y + (maxRadius - tickLength) * sin(rad).toFloat()
-            val outerX = center.x + maxRadius * cos(rad).toFloat()
-            val outerY = center.y + maxRadius * sin(rad).toFloat()
-
-            drawLine(
-                color = tickColor,
-                start = Offset(innerX, innerY),
-                end = Offset(outerX, outerY),
-                strokeWidth = tickWidth
-            )
-        }
-
-        // Scan arc
-        rotateDraw(scanAngle, center) {
-            drawArc(
-                brush = Brush.sweepGradient(
-                    0.00f to PrimaryGreen.copy(alpha = 0.4f),
-                    0.15f to PrimaryGreen.copy(alpha = 0.15f),
-                    1.00f to Color.Transparent
+        // 3D Perspective Arrow overlay (guided or aligned state)
+        if (isGuided || isAligned) {
+            // Floating idle animation
+            val floatOffset by infiniteTransition.animateFloat(
+                initialValue = -2.5f,
+                targetValue = 2.5f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(2200, easing = EaseInOutCubic),
+                    repeatMode = RepeatMode.Reverse
                 ),
-                startAngle = -10f,
-                sweepAngle = 65f,
-                useCenter = false,
-                topLeft = Offset(center.x - maxRadius, center.y - maxRadius),
-                size = Size(maxRadius * 2, maxRadius * 2),
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                label = "arrowFloat"
             )
+
+            // Pseudo-3D perspective: compress Y axis to simulate arrow laying on a surface
+            val perspectiveY = if (isAligned) 0.92f else 0.5f
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .scale(scaleX = 1f, scaleY = perspectiveY)
+                    .rotate(animatedAngle)
+                    .offset(y = floatOffset.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                PrecisionArrow(
+                    modifier = Modifier.size(90.dp),
+                    isAligned = isAligned
+                )
+            }
         }
 
-        // Pulse ripples
-        if (isActive) {
-            drawCircle(
-                color = pulseColor.copy(alpha = pulse1Alpha),
-                radius = maxRadius * pulse1Radius,
-                center = center,
-                style = Stroke(width = 1.5.dp.toPx())
-            )
-            drawCircle(
-                color = pulseColor.copy(alpha = pulse2Alpha),
-                radius = maxRadius * pulse2Radius,
-                center = center,
-                style = Stroke(width = 1.5.dp.toPx())
-            )
-        }
-
-        // Center dot (outer)
-        drawCircle(
-            color = if (isActive) PrimaryGreen else Color(0xFF1A3328),
-            radius = 6.dp.toPx(),
-            center = center
-        )
-        // Center dot (inner)
-        drawCircle(
-            color = Color(0xFF060A08),
-            radius = 3.dp.toPx(),
-            center = center
-        )
+        // (Searching spinner removed — particles alone indicate searching)
     }
 }
 
-// ---- Arrow Pointer (Section 6.6) ----
+// ============================================================
+// PRECISION ARROW (Section 6.6 - Redesigned)
+// 3D perspective V-shaped dart arrow with full rounded corners
+// ============================================================
 
 @Composable
-fun ArrowPointer(modifier: Modifier = Modifier) {
-    val arrowGreen = PrimaryGreen
-    val arrowGreenDark = PrimaryGreenDark
+fun PrecisionArrow(modifier: Modifier = Modifier, isAligned: Boolean = false) {
+    val arrowAlpha = if (isAligned) 0.95f else 0.85f
+    val strokeW = 9.dp  // thick, bold line
 
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
+        val cx = w / 2f
+        val sw = strokeW.toPx()
 
-        // === Upper half (points to target) ===
-        val upperPath = Path().apply {
-            moveTo(0.50f * w, 0.00f * h)  // tip
-            lineTo(0.72f * w, 0.38f * h)  // right shoulder
-            lineTo(0.58f * w, 0.50f * h)  // right waist
-            lineTo(0.50f * w, 0.50f * h)  // center
-            close()
+        // Outer glow
+        val glowW = sw * 1.8f
+        val tipY = h * 0.08f
+        val midY = h * 0.42f
+        val baseY = h * 0.92f
+        val headHalfW = w * 0.42f
+        val shaftHalfW = w * 0.14f
+
+        // === Glow layer ===
+        val glowColor = Color.White.copy(alpha = arrowAlpha * 0.3f)
+
+        // Shaft glow
+        drawLine(glowColor, Offset(cx, midY), Offset(cx, baseY), glowW, StrokeCap.Round)
+        // Arrowhead left wing glow
+        drawLine(glowColor, Offset(cx, tipY), Offset(cx - headHalfW, midY), glowW, StrokeCap.Round)
+        // Arrowhead right wing glow
+        drawLine(glowColor, Offset(cx, tipY), Offset(cx + headHalfW, midY), glowW, StrokeCap.Round)
+
+        // === Solid arrow ===
+        val arrowColor = Color.White.copy(alpha = arrowAlpha)
+
+        // Shaft
+        drawLine(arrowColor, Offset(cx, midY), Offset(cx, baseY), sw, StrokeCap.Round)
+        // Arrowhead left
+        drawLine(arrowColor, Offset(cx, tipY), Offset(cx - headHalfW, midY), sw, StrokeCap.Round)
+        // Arrowhead right
+        drawLine(arrowColor, Offset(cx, tipY), Offset(cx + headHalfW, midY), sw, StrokeCap.Round)
+    }
+}
+
+// ---- Precision Data Display ----
+
+@Composable
+fun PrecisionDataDisplay(uwbData: UwbRealData, isNearby: Boolean, isAligned: Boolean) {
+    val distanceColor = when {
+        isAligned -> Color.White
+        isNearby -> PrimaryGreen
+        else -> TextPrimary
+    }
+    val directionLabel = azimuthToRelativeDirection(uwbData.azimuthDegrees)
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // Distance row (large, prominent)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = String.format("%.1f", uwbData.distanceMeters),
+                style = MaterialTheme.typography.displayLarge,
+                color = distanceColor
+            )
+            Text(
+                text = "米",
+                style = MaterialTheme.typography.headlineSmall,
+                color = distanceColor,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         }
-        drawPath(
-            path = upperPath,
-            brush = Brush.verticalGradient(
-                colors = listOf(arrowGreen, arrowGreenDark, Color(0xFF009624))
-            ),
-            style = androidx.compose.ui.graphics.drawscope.Fill
-        )
-        drawPath(
-            path = upperPath,
-            color = arrowGreen.copy(alpha = 0.5f),
-            style = Stroke(width = 1.5.dp.toPx())
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Direction label (relative: front/left/right/behind)
+        Text(
+            text = directionLabel,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (isAligned) Color.White else PrimaryGreen,
+            fontWeight = FontWeight.SemiBold
         )
 
-        // === Lower half (tail) ===
-        val lowerPath = Path().apply {
-            moveTo(0.45f * w, 0.50f * h)  // upper-left waist
-            lineTo(0.37f * w, 0.63f * h)  // left tail tip
-            lineTo(0.46f * w, 0.58f * h)  // left inner notch
-            lineTo(0.50f * w, 0.72f * h)  // tail bottom
-            lineTo(0.54f * w, 0.58f * h)  // right inner notch
-            lineTo(0.63f * w, 0.63f * h)  // right tail tip
-            lineTo(0.55f * w, 0.50f * h)  // upper-right waist
-            close()
-        }
-        drawPath(
-            path = lowerPath,
-            brush = Brush.verticalGradient(
-                colors = listOf(Color(0xFF3A3F3C), Color(0xFF2A2F2C), Color(0xFF1A1F1C))
-            ),
-            style = androidx.compose.ui.graphics.drawscope.Fill
-        )
-        drawPath(
-            path = lowerPath,
-            color = Color.White.copy(alpha = 0.15f),
-            style = Stroke(width = 1.2.dp.toPx())
-        )
+        Spacer(modifier = Modifier.height(4.dp))
 
-        // === Center rivet ===
-        val rivetRadius = 0.09f * w
-        drawCircle(
-            color = Color(0xFF1A1F1C),
-            radius = rivetRadius,
-            center = Offset(0.50f * w, 0.50f * h)
-        )
-        drawCircle(
-            color = Color(0xFF2A332F),
-            radius = rivetRadius,
-            center = Offset(0.50f * w, 0.50f * h),
-            style = Stroke(width = 1.5.dp.toPx())
-        )
-        drawCircle(
-            color = arrowGreen.copy(alpha = 0.4f),
-            radius = 0.04f * w,
-            center = Offset(0.50f * w, 0.50f * h)
+        // Angle display (small, secondary)
+        Text(
+            text = "${uwbData.azimuthDegrees.toInt()}°",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (isAligned) Color.White.copy(alpha = 0.7f) else TextMuted,
+            fontWeight = FontWeight.Medium
         )
     }
 }
 
-// ---- Data Display ----
+fun azimuthToRelativeDirection(degrees: Float): String {
+    val absDeg = abs(degrees)
+    return when {
+        absDeg <= 15f -> "前方"
+        degrees > 15f && degrees < 165f -> "右侧"
+        degrees < -15f && degrees > -165f -> "左侧"
+        absDeg >= 165f -> "后方"
+        else -> "前方"
+    }
+}
+
+// ---- Legacy Data Display (kept for reference) ----
 
 @Composable
 fun DataDisplay(uwbData: UwbRealData, isNearby: Boolean) {
     val distanceColor = if (isNearby) PrimaryGreen else TextPrimary
-    val directionLabel = azimuthToDirection(uwbData.azimuthDegrees)
+    val directionLabel = azimuthToRelativeDirection(uwbData.azimuthDegrees)
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        // Distance row
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 text = String.format("%.1f", uwbData.distanceMeters),
@@ -1176,7 +1378,6 @@ fun DataDisplay(uwbData: UwbRealData, isNearby: Boolean) {
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Angle row
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 text = "${uwbData.azimuthDegrees.toInt()}",
@@ -1193,7 +1394,6 @@ fun DataDisplay(uwbData: UwbRealData, isNearby: Boolean) {
 
         Spacer(modifier = Modifier.height(2.dp))
 
-        // Direction label
         Text(
             text = directionLabel,
             style = MaterialTheme.typography.labelSmall,
