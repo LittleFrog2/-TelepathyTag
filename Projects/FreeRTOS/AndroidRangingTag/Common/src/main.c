@@ -25,11 +25,18 @@
 #include "deca_device_api.h"
 #include "qos.h"
 #include "qlog.h"
+#include "qthread.h"
+#include "qtime.h"
+#include "boards.h"
+#include "android_oob.h"
 #if CONFIG_LOG
 #include <log_processing.h>
 #endif
 
 #define DEAD_BEEF 0xDEADBEEF /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
+#define FIND_PHONE_BUTTON_TASK_STACK_SIZE_BYTES 1024
+#define FIND_PHONE_BUTTON_POLL_MS              30
+#define FIND_PHONE_BUTTON_COOLDOWN_MS          1200
 
 extern const char ApplicationName[]; /**< Name of Application release. */
 extern const char OsName[];
@@ -40,6 +47,49 @@ static const char version[] = FULL_VERSION;
 #endif
 
 extern void ble_init(char *gap_name);
+
+static void find_phone_button_task(void *arg)
+{
+    bool was_pressed = bsp_board_button_state_get(0);
+    int cooldown_ms = 0;
+    (void)arg;
+
+    while (1)
+    {
+        const bool is_pressed = bsp_board_button_state_get(0);
+
+        if (is_pressed && !was_pressed && cooldown_ms <= 0)
+        {
+            android_oob_handle_find_phone_button();
+            cooldown_ms = FIND_PHONE_BUTTON_COOLDOWN_MS;
+        }
+
+        was_pressed = is_pressed;
+        if (cooldown_ms > 0)
+        {
+            cooldown_ms -= FIND_PHONE_BUTTON_POLL_MS;
+        }
+        qtime_msleep_yield(FIND_PHONE_BUTTON_POLL_MS);
+    }
+}
+
+static void create_find_phone_button_task(void)
+{
+    static uint8_t find_phone_button_stack[FIND_PHONE_BUTTON_TASK_STACK_SIZE_BYTES];
+    struct qthread *thread = qthread_create(
+        find_phone_button_task,
+        NULL,
+        "FindPhoneBtn",
+        find_phone_button_stack,
+        FIND_PHONE_BUTTON_TASK_STACK_SIZE_BYTES,
+        QTHREAD_PRIORITY_NORMAL
+    );
+
+    if (!thread)
+    {
+        QLOGE("Failed to create find-phone button task");
+    }
+}
 
 /**
  * @brief Callback function for asserts in the SoftDevice.
@@ -96,6 +146,8 @@ int main(void)
     char advertising_name[32];
     snprintf(advertising_name, sizeof(advertising_name), "%s (%08X)", (char *)BoardName, (unsigned int)NRF_FICR->DEVICEADDR[0]);
     ble_init(advertising_name);
+    bsp_board_init(BSP_INIT_BUTTONS);
+    create_find_phone_button_task();
 
     QLOGI("Application: %s", ApplicationName);
     QLOGI("BOARD: %s", BoardName);

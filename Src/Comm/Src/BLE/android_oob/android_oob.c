@@ -20,6 +20,7 @@
 
 #define ANDROID_OOB_MSG_START_SESSION 0x02
 #define ANDROID_OOB_MSG_ACK           0x82
+#define ANDROID_OOB_MSG_FIND_PHONE    0x90
 
 #define ANDROID_OOB_START_LEN         34
 #define ANDROID_OOB_ACK_LEN           13
@@ -34,6 +35,7 @@
 #define ANDROID_OOB_DIAG_PENDING_ACK  0x0100
 #define ANDROID_OOB_DIAG_STARTED      0x0000
 #define ANDROID_OOB_FIRA_DIAG_LEN     47
+#define ANDROID_OOB_INVALID_CONN      0xFFFF
 
 typedef struct android_ranging_tag_fira_diag_s
 {
@@ -61,8 +63,12 @@ typedef struct android_ranging_tag_fira_diag_s
 } android_ranging_tag_fira_diag_t;
 
 extern fira_device_configure_t fira_config;
+extern uint16_t current_conn_handle;
 extern void StartUWB(fira_device_configure_t *config, void *user_ctx);
 extern bool android_ranging_tag_get_fira_diag(android_ranging_tag_fira_diag_t *diag);
+
+static uint8_t find_phone_seq;
+static uint8_t find_phone_adv_active;
 
 static uint16_t get_u16_le(const uint8_t *data)
 {
@@ -159,6 +165,35 @@ static void send_fira_param_diag(uint16_t conn_handle)
     memcpy(&out[39], diag.vupper64, sizeof(diag.vupper64));
 
     send_qnis_data(conn_handle, out, sizeof(out));
+}
+
+void android_oob_handle_find_phone_button(void)
+{
+    uint8_t event[10] = {
+        ANDROID_OOB_MAGIC_0,
+        ANDROID_OOB_MAGIC_1,
+        ANDROID_OOB_MAGIC_2,
+        ANDROID_OOB_MAGIC_3,
+        ANDROID_OOB_VERSION,
+        ANDROID_OOB_MSG_FIND_PHONE,
+        0x02,
+        0x00,
+        0x01,
+        0x00,
+    };
+
+    event[9] = find_phone_seq++;
+
+    if (current_conn_handle == ANDROID_OOB_INVALID_CONN)
+    {
+        find_phone_adv_active = find_phone_adv_active ? 0 : 1;
+        QLOGI("Find-phone advertising event: active=%u seq=%u", find_phone_adv_active, event[9]);
+        ble_set_find_phone_advertising(find_phone_adv_active, event[9]);
+        return;
+    }
+
+    QLOGI("Find-phone button event sent: seq=%u", event[9]);
+    send_qnis_data(current_conn_handle, event, sizeof(event));
 }
 
 static bool parse_start_session(uint16_t conn_handle, const uint8_t *data, uint16_t len)

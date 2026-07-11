@@ -22,6 +22,7 @@
 #endif
 
 void send_qnis_data(uint16_t conn_handle, uint8_t *buffer, uint16_t data_len);
+void ble_set_find_phone_advertising(uint8_t active, uint8_t seq);
 void handle_niq_data(uint16_t conn_handle, const uint8_t *data, int data_len);
 void ble_evt_disconnected_handler(uint16_t conn_handle);
 void ble_evt_connected_handler(uint16_t conn_handle);

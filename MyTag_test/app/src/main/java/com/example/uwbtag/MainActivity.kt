@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -60,6 +61,8 @@ class MainActivity : ComponentActivity() {
     ) { permissions ->
         if (!permissions.all { it.value }) {
             Toast.makeText(this, "需要授权才可使用雷达寻物", Toast.LENGTH_LONG).show()
+        } else {
+            startFindPhoneScanService()
         }
     }
 
@@ -68,7 +71,9 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
 
-        checkAndRequestPermissions()
+        if (checkAndRequestPermissions()) {
+            startFindPhoneScanService()
+        }
 
         setContent {
             val currentMac by bleManager.connectedMac.collectAsState()
@@ -88,11 +93,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            LaunchedEffect(Unit) {
+                bleManager.findPhoneEventFlow.collect {
+                    val started = feedbackManager.toggleFindPhoneAlert()
+                    val message = if (started) "Tag 按键已触发手机响铃" else "Tag 按键已取消手机响铃"
+                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+
             LaunchedEffect(uwbData.distanceMeters, connState, findingStatus) {
                 if (connState == "已连接" && findingStatus == FindingStatus.SUCCESS && uwbData.distanceMeters > 0.05f) {
                     feedbackManager.triggerDistanceFeedback(uwbData.distanceMeters)
                 } else {
-                    feedbackManager.stop()
+                    feedbackManager.stopDistanceFeedback()
                 }
             }
 
@@ -118,7 +131,7 @@ class MainActivity : ComponentActivity() {
                                 bleManager.sendStartFindingCmd()
                             },
                             onDisconnect = {
-                                feedbackManager.stop()
+                                feedbackManager.stopAll()
                                 bleManager.disconnect()
                             }
                         )
@@ -162,19 +175,41 @@ class MainActivity : ComponentActivity() {
         bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
     }
 
-    private fun checkAndRequestPermissions() {
+    private fun checkAndRequestPermissions(): Boolean {
         val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.UWB_RANGING, Manifest.permission.VIBRATE)
+            buildList {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.UWB_RANGING)
+                add(Manifest.permission.VIBRATE)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.VIBRATE)
         }
         val missing = required.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
-        if (missing.isNotEmpty()) requestPermissionLauncher.launch(missing)
+        if (missing.isNotEmpty()) {
+            requestPermissionLauncher.launch(missing)
+            return false
+        }
+        return true
+    }
+
+    private fun startFindPhoneScanService() {
+        val intent = Intent(this, FindPhoneScanService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        feedbackManager.stop()
+        feedbackManager.stopAll()
         bleManager.disconnect()
     }
 }

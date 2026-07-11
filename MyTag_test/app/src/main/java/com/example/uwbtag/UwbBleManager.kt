@@ -81,6 +81,12 @@ class UwbBleManager(private val context: Context) {
     )
     val uwbDataFlow: SharedFlow<UwbRealData> = _uwbDataFlow.asSharedFlow()
 
+    private val _findPhoneEventFlow = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val findPhoneEventFlow: SharedFlow<Unit> = _findPhoneEventFlow.asSharedFlow()
+
     private val _findingStatus = MutableStateFlow(FindingStatus.IDLE)
     val findingStatus: StateFlow<FindingStatus> = _findingStatus.asStateFlow()
 
@@ -355,6 +361,13 @@ class UwbBleManager(private val context: Context) {
         val hexString = bytes.joinToString(" ") { "%02X".format(it) }
         logToUi("📬 [通道动态] Notify 通道 (2e939af2) 捕获到报文: [$hexString]")
 
+        if (isFindPhoneButtonEvent(bytes)) {
+            val seq = bytes[9].toInt() and 0xFF
+            logToUi("🔔 收到 Tag 按键找手机事件，seq=$seq")
+            _findPhoneEventFlow.tryEmit(Unit)
+            return
+        }
+
         if (UwbOobSession.isAck(bytes)) {
             val status = UwbOobSession.ackStatus(bytes)
             val ackSessionId = UwbOobSession.ackSessionId(bytes)
@@ -626,6 +639,18 @@ class UwbBleManager(private val context: Context) {
                 "multi=$multiNode, schedule=$schedule, vupper64=$vupper64"
         )
         return true
+    }
+
+    private fun isFindPhoneButtonEvent(bytes: ByteArray): Boolean {
+        return bytes.size == 10 &&
+            bytes[0] == 'U'.code.toByte() &&
+            bytes[1] == 'T'.code.toByte() &&
+            bytes[2] == 'O'.code.toByte() &&
+            bytes[3] == 'B'.code.toByte() &&
+            bytes[4] == 0x01.toByte() &&
+            bytes[5] == 0x90.toByte() &&
+            bytes.toUInt16Le(6) == 2 &&
+            bytes[8] == 0x01.toByte()
     }
 
     private fun handleFiraRuntimeDiag(bytes: ByteArray): Boolean {

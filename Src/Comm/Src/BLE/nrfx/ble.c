@@ -56,6 +56,11 @@
 #define NEXT_CONN_PARAMS_UPDATE_DELAY  30000 /**< Time between each call to sd_ble_gap_conn_param_update after the first call (30 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT   2     /**< Number of attempts before giving up the connection parameter negotiation. */
 
+#define FIND_PHONE_COMPANY_ID          0xFFFF
+#define FIND_PHONE_ADV_MAGIC_0         'Q'
+#define FIND_PHONE_ADV_MAGIC_1         'F'
+#define FIND_PHONE_ADV_MAGIC_2         'P'
+
 #define SEC_PARAM_BOND                 1                    /**< Perform bonding. */
 #define SEC_PARAM_MITM                 0                    /**< Man In The Middle protection not required. */
 #define SEC_PARAM_LESC                 0                    /**< LE Secure Connections not enabled. */
@@ -74,6 +79,20 @@ BLE_ADVERTISING_DEF(m_advertising);                    /**< Advertising module i
 static ble_uuid_t m_adv_uuids[] = /**< Universally unique service identifiers. */
     {
         {BLE_UUID_QNIS_SERVICE, BLE_UUID_TYPE_VENDOR_BEGIN}};
+static uint8_t m_find_phone_adv_payload[5] = {
+    FIND_PHONE_ADV_MAGIC_0,
+    FIND_PHONE_ADV_MAGIC_1,
+    FIND_PHONE_ADV_MAGIC_2,
+    0,
+    0,
+};
+static ble_advdata_manuf_data_t m_find_phone_manuf_data = {
+    .company_identifier = FIND_PHONE_COMPANY_ID,
+    .data = {
+        .size = sizeof(m_find_phone_adv_payload),
+        .p_data = m_find_phone_adv_payload,
+    },
+};
 static void advertising_start(void *parm);
 
 /**
@@ -483,6 +502,7 @@ static void advertising_init(void)
     init.advdata.flags = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
     init.advdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
     init.advdata.uuids_complete.p_uuids = m_adv_uuids;
+    init.advdata.p_manuf_specific_data = &m_find_phone_manuf_data;
 
     init.srdata.name_type = BLE_ADVDATA_FULL_NAME;
 
@@ -510,6 +530,45 @@ static void advertising_start(void *parm)
 {
     ret_code_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_SLOW);
     APP_ERROR_CHECK(err_code);
+}
+
+void ble_set_find_phone_advertising(uint8_t active, uint8_t seq)
+{
+    ble_advdata_t advdata;
+    ble_advdata_t srdata;
+    ret_code_t err_code;
+
+    m_find_phone_adv_payload[3] = active ? 1 : 0;
+    m_find_phone_adv_payload[4] = seq;
+
+    memset(&advdata, 0, sizeof(advdata));
+    advdata.name_type = BLE_ADVDATA_NO_NAME;
+    advdata.include_appearance = false;
+    advdata.flags = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
+    advdata.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
+    advdata.uuids_complete.p_uuids = m_adv_uuids;
+    advdata.p_manuf_specific_data = &m_find_phone_manuf_data;
+
+    memset(&srdata, 0, sizeof(srdata));
+    srdata.name_type = BLE_ADVDATA_FULL_NAME;
+
+    err_code = sd_ble_gap_adv_stop(m_advertising.adv_handle);
+    if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_INVALID_STATE))
+    {
+        APP_ERROR_CHECK(err_code);
+    }
+
+    err_code = ble_advertising_advdata_update(&m_advertising, &advdata, &srdata);
+    if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_INVALID_STATE))
+    {
+        APP_ERROR_CHECK(err_code);
+    }
+
+    err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_SLOW);
+    if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_INVALID_STATE))
+    {
+        APP_ERROR_CHECK(err_code);
+    }
 }
 
 
