@@ -60,3 +60,12 @@ val RadarBgCircle = Color(0xFF0F1A15)
 val SignalStrong = Color(0xFF4ADE80)
 val SignalMedium = Color(0xFFFFAB40)
 val SignalWeak = Color(0xFFF87171)
+
+// ============================================================
+// Precision Finding Colors (Section 2.8)
+// ============================================================
+val AlignedGreenBg = Color(0xFF34C759)
+val ParticleGlow = Color(0xCCFFFFFF)
+val PrecisionArcGreen = Color(0xFF00E676)
+val SearchBgDark = Color(0xFF1C1C1E)
+val GuidedBgBlack = Color(0xFF000000)
