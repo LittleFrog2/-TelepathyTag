@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -51,18 +52,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.rotate as rotateDraw
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -116,6 +120,8 @@ class MainActivity : ComponentActivity() {
     ) { permissions ->
         if (!permissions.all { it.value }) {
             Toast.makeText(this, "需要授权才可使用雷达寻物", Toast.LENGTH_LONG).show()
+        } else {
+            startFindPhoneScanService()
         }
     }
 
@@ -124,7 +130,9 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
 
-        checkAndRequestPermissions()
+        if (checkAndRequestPermissions()) {
+            startFindPhoneScanService()
+        }
 
         setContent {
             TelepathyTagTheme {
@@ -151,7 +159,16 @@ class MainActivity : ComponentActivity() {
                     if (connState == "已连接" && findingStatus == FindingStatus.SUCCESS && uwbData.distanceMeters > 0.05f) {
                         feedbackManager.triggerDistanceFeedback(uwbData.distanceMeters)
                     } else {
-                        feedbackManager.stop()
+                        feedbackManager.stopDistanceFeedback()
+                    }
+                }
+
+                // Tag → Phone: SW2 button triggers phone ring via findPhoneEventFlow
+                LaunchedEffect(Unit) {
+                    bleManager.findPhoneEventFlow.collect {
+                        val started = feedbackManager.toggleFindPhoneAlert()
+                        val message = if (started) "Tag 按键已触发手机响铃" else "Tag 按键已取消手机响铃"
+                        Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -179,11 +196,11 @@ class MainActivity : ComponentActivity() {
                                 bleManager.sendStartFindingCmd()
                             },
                             onDisconnect = {
-                                feedbackManager.stop()
+                                feedbackManager.stopAll()
                                 bleManager.disconnect()
                             },
                             onConnectSavedDevice = { mac ->
-                                feedbackManager.stop()
+                                feedbackManager.stopAll()
                                 bleManager.connectToDevice(mac)
                             },
                             onAddBinding = { mac, name ->
@@ -230,27 +247,43 @@ class MainActivity : ComponentActivity() {
         bluetoothAdapter?.bluetoothLeScanner?.stopScan(leScanCallback)
     }
 
-    private fun checkAndRequestPermissions() {
+    private fun checkAndRequestPermissions(): Boolean {
         val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.UWB_RANGING,
-                Manifest.permission.VIBRATE
-            )
+            buildList {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.UWB_RANGING)
+                add(Manifest.permission.VIBRATE)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.toTypedArray()
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.VIBRATE)
         }
         val missing = required.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }.toTypedArray()
-        if (missing.isNotEmpty()) requestPermissionLauncher.launch(missing)
+        if (missing.isNotEmpty()) {
+            requestPermissionLauncher.launch(missing)
+            return false
+        }
+        return true
+    }
+
+    private fun startFindPhoneScanService() {
+        val intent = Intent(this, FindPhoneScanService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        feedbackManager.stop()
+        feedbackManager.stopAll()
         bleManager.disconnect()
     }
 }
@@ -285,7 +318,7 @@ fun BleScanScreen(
         ) {
             // Title
             Text(
-                text = "Halo Tag",
+                text = "灵犀 Tag",
                 style = MaterialTheme.typography.headlineLarge,
                 color = TextOnDark,
                 fontWeight = FontWeight.SemiBold
@@ -295,7 +328,7 @@ fun BleScanScreen(
 
             // Subtitle
             Text(
-                text = "Find your items...",
+                text = "查找你的物品...",
                 style = MaterialTheme.typography.bodyLarge,
                 color = TextOnDark.copy(alpha = 0.7f)
             )
@@ -329,7 +362,7 @@ fun BleScanScreen(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Scanning for tags...",
+                            text = "正在搜索物品...",
                             style = MaterialTheme.typography.labelLarge,
                             color = PrimaryGreen,
                             fontWeight = FontWeight.SemiBold
@@ -337,7 +370,7 @@ fun BleScanScreen(
                     }
                 } else {
                     Text(
-                        text = "🔍 Scan for Tags",
+                        text = "搜索物品",
                         style = MaterialTheme.typography.labelLarge,
                         color = PrimaryGreen,
                         fontWeight = FontWeight.SemiBold
@@ -350,9 +383,9 @@ fun BleScanScreen(
             // Status text
             Text(
                 text = when {
-                    isScanning && devices.isEmpty() -> "Searching..."
-                    devices.isNotEmpty() -> "${devices.size} device(s)"
-                    else -> "Tap scan to search for nearby tags"
+                    isScanning && devices.isEmpty() -> "搜索中..."
+                    devices.isNotEmpty() -> "${devices.size} 个设备"
+                    else -> "点击扫描搜索附近的标签"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.White.copy(alpha = 0.5f)
@@ -398,18 +431,29 @@ fun EmptyState() {
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = "📡",
-                fontSize = 48.sp
-            )
+            // Vector radar icon
+            Canvas(modifier = Modifier.size(56.dp)) {
+                val cx = size.width / 2; val cy = size.height / 2
+                val r = size.minDimension * 0.42f; val s = 1.8.dp.toPx()
+                // outer ring
+                drawCircle(Color.White.copy(alpha = 0.3f), r, Offset(cx, cy), style = Stroke(s))
+                // middle ring
+                drawCircle(Color.White.copy(alpha = 0.2f), r * 0.62f, Offset(cx, cy), style = Stroke(s * 0.7f))
+                // center dot
+                drawCircle(Color.White.copy(alpha = 0.5f), s * 1.5f, Offset(cx, cy))
+                // scan line (45°)
+                val endX = cx + r * 0.85f * kotlin.math.cos(Math.toRadians(-45.0)).toFloat()
+                val endY = cy + r * 0.85f * kotlin.math.sin(Math.toRadians(-45.0)).toFloat()
+                drawLine(Color.White.copy(alpha = 0.4f), Offset(cx, cy), Offset(endX, endY), s * 0.8f, StrokeCap.Round)
+            }
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "No devices found",
+                text = "未发现设备",
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color.White.copy(alpha = 0.5f)
             )
             Text(
-                text = "Tap scan to search for nearby tags",
+                text = "点击扫描搜索附近的标签",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.35f)
             )
@@ -469,7 +513,7 @@ fun DeviceCard(
                 )
                 if (isBound) {
                     Text(
-                        text = "Bound tag",
+                        text = "已绑定",
                         style = MaterialTheme.typography.bodySmall,
                         color = PrimaryGreen.copy(alpha = 0.6f)
                     )
@@ -601,12 +645,12 @@ fun HaloTagRadarScreen(
             onDismissRequest = { showBindDialog = false },
             containerColor = CardDark,
             title = {
-                Text("New Tag Found!", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
+                Text("发现新标签！", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
             },
             text = {
                 Column {
                     Text(
-                        text = "What is this tag attached to?",
+                        text = "这个标签贴在什么物品上？",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary
                     )
@@ -614,8 +658,8 @@ fun HaloTagRadarScreen(
                     OutlinedTextField(
                         value = bindName,
                         onValueChange = { bindName = it },
-                        label = { Text("Item name", color = TextSecondary) },
-                        placeholder = { Text("e.g. My Keys, Wallet...", color = TextMuted) },
+                        label = { Text("物品名称", color = TextSecondary) },
+                        placeholder = { Text("例如：钥匙、钱包...", color = TextMuted) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = TextPrimary,
@@ -636,12 +680,12 @@ fun HaloTagRadarScreen(
                         bindName = ""
                     }
                 ) {
-                    Text("Save", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
+                    Text("保存", color = PrimaryGreen, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showBindDialog = false; bindName = "" }) {
-                    Text("Skip", color = TextSecondary)
+                    Text("跳过", color = TextSecondary)
                 }
             }
         )
@@ -674,6 +718,8 @@ fun HaloTagRadarScreen(
                             isGuided = isGuided,
                             isAligned = isAligned,
                             azimuthDegrees = uwbData.azimuthDegrees,
+                            elevationDegrees = uwbData.elevationDegrees,
+                            distanceMeters = uwbData.distanceMeters,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -682,11 +728,11 @@ fun HaloTagRadarScreen(
 
                     // Status label
                     val statusLabel = when {
-                        isAligned -> "FOUND"
-                        isGuided -> "GUIDING"
-                        isSearching -> "SEARCHING..."
-                        isError -> "ERROR"
-                        else -> "READY"
+                        isAligned -> "已对准"
+                        isGuided -> "导航中"
+                        isSearching -> "搜索中..."
+                        isError -> "错误"
+                        else -> "就绪"
                     }
                     val statusColor = when {
                         isAligned -> Color.White
@@ -712,6 +758,13 @@ fun HaloTagRadarScreen(
                             uwbData = uwbData,
                             isNearby = isNearby,
                             isAligned = isAligned
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    item {
+                        RangingMetricsRow(
+                            uwbData = uwbData,
+                            isActive = isSuccess
                         )
                         Spacer(modifier = Modifier.height(20.dp))
                     }
@@ -744,7 +797,7 @@ fun HaloTagRadarScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "🔊 Play Sound",
+                                text = "播放声音",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = Color.White
                             )
@@ -766,7 +819,7 @@ fun HaloTagRadarScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "🧭 Direction",
+                                text = "方向指引",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = Color.White
                             )
@@ -785,15 +838,15 @@ fun HaloTagRadarScreen(
                         else -> PrimaryGreen
                     }
                     val mainBtnText = when (findingStatus) {
-                        FindingStatus.IDLE -> "Start Finding"
-                        FindingStatus.SENDING -> "Waiting for OOB ACK..."
-                        FindingStatus.BOARD_STARTING -> "Waiting for board startup..."
-                        FindingStatus.BOARD_STARTED -> "Board Ready: Restart"
-                        FindingStatus.RANGING -> "Waiting for UWB result..."
-                        FindingStatus.SUCCESS -> String.format("✅ Found It!  (%.1f m)", uwbData.distanceMeters)
-                        FindingStatus.FAILED -> "Write Failed: Retry"
-                        FindingStatus.TIMEOUT -> "ACK Timeout: Retry"
-                        FindingStatus.UWB_ERROR -> "Range Failed: Retry"
+                        FindingStatus.IDLE -> "开始查找"
+                        FindingStatus.SENDING -> "等待 OOB 确认..."
+                        FindingStatus.BOARD_STARTING -> "等待板端启动..."
+                        FindingStatus.BOARD_STARTED -> "板端就绪：重新开始"
+                        FindingStatus.RANGING -> "等待 UWB 测距结果..."
+                        FindingStatus.SUCCESS -> String.format("找到了！(%.1f米)", uwbData.distanceMeters)
+                        FindingStatus.FAILED -> "写入失败：重试"
+                        FindingStatus.TIMEOUT -> "确认超时：重试"
+                        FindingStatus.UWB_ERROR -> "测距失败：重试"
                     }
 
                     Box(
@@ -824,7 +877,7 @@ fun HaloTagRadarScreen(
                 // MY DEVICES section
                 item {
                     Text(
-                        text = "MY DEVICES",
+                        text = "我的设备",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextMuted,
                         letterSpacing = 1.5.sp,
@@ -838,7 +891,7 @@ fun HaloTagRadarScreen(
                 if (tagBindings.isEmpty()) {
                     item {
                         Text(
-                            text = "No saved tags. Scan and tap ＋ to bind a tag.",
+                            text = "暂无已保存的标签，扫描后点击＋绑定",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextMuted,
                             modifier = Modifier.padding(horizontal = 24.dp)
@@ -904,7 +957,7 @@ fun TopBar(connState: String, onDisconnect: () -> Unit) {
 
             Column {
                 Text(
-                    text = "Halo Tag",
+                    text = "灵犀Tag",
                     style = MaterialTheme.typography.titleSmall,
                     color = Color.White.copy(alpha = 0.7f)
                 )
@@ -920,7 +973,7 @@ fun TopBar(connState: String, onDisconnect: () -> Unit) {
 
             TextButton(onClick = onDisconnect) {
                 Text(
-                    text = "Disconnect",
+                    text = "断开连接",
                     style = MaterialTheme.typography.labelMedium,
                     color = Color.White.copy(alpha = 0.7f)
                 )
@@ -940,6 +993,8 @@ fun PrecisionFindingDisplay(
     isGuided: Boolean,
     isAligned: Boolean,
     azimuthDegrees: Float,
+    elevationDegrees: Float = 0f,
+    distanceMeters: Float = Float.MAX_VALUE,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "precisionFinder")
@@ -989,6 +1044,29 @@ fun PrecisionFindingDisplay(
     )
     val rippleAlpha = (0.5f * (1f - rippleRadius)).coerceIn(0f, 0.5f)
 
+    // ---- Alarm-clock shake when within 0.3m ----
+    val isShaking = (isGuided || isAligned) && distanceMeters < 0.3f
+    val shakeIntensity by animateFloatAsState(
+        targetValue = if (isShaking) {
+            ((0.3f - distanceMeters) / 0.3f).coerceIn(0f, 1f)
+        } else 0f,
+        animationSpec = tween(200, easing = EaseOutCubic),
+        label = "shakeIntensity"
+    )
+    val shakePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(140, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shakePhase"
+    )
+    val localDensity = LocalDensity.current
+    val maxShakePx = with(localDensity) { 5.dp.toPx() } * shakeIntensity
+    val shakeTranslationX = sin(shakePhase.toDouble()).toFloat() * maxShakePx
+    val shakeRotationZ = sin(shakePhase.toDouble() * 2.0).toFloat() * shakeIntensity * 2f
+
     // Smooth arrow rotation
     val animatedAngle by animateFloatAsState(
         targetValue = when {
@@ -1006,7 +1084,13 @@ fun PrecisionFindingDisplay(
     // Generate particles once
     val particles = remember { generateFinderParticles(55, 0.82f) }
 
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    Box(
+        modifier = modifier.graphicsLayer {
+            translationX = shakeTranslationX
+            rotationZ = shakeRotationZ
+        },
+        contentAlignment = Alignment.Center
+    ) {
         // Background canvas layer
         Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2, size.height / 2)
@@ -1226,20 +1310,45 @@ fun PrecisionFindingDisplay(
                 label = "arrowFloat"
             )
 
-            // Pseudo-3D perspective: compress Y axis to simulate arrow laying on a surface
-            val perspectiveY = if (isAligned) 0.92f else 0.5f
+            // Smoothed elevation for 3D tilt
+            val animatedElevation by animateFloatAsState(
+                targetValue = if (isGuided && elevationDegrees != 0f) {
+                    (elevationDegrees * 0.65f).coerceIn(-28f, 28f)
+                } else 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                ),
+                label = "arrowElevation"
+            )
+
+            val heightColor = when {
+                elevationDegrees == 0f -> Color(0xFFECEFF1)
+                elevationDegrees > 8f -> Color(0xFF40C4FF)
+                elevationDegrees < -8f -> Color(0xFFFFAB40)
+                else -> Color.White
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .scale(scaleX = 1f, scaleY = perspectiveY)
-                    .rotate(animatedAngle)
+                    .graphicsLayer {
+                        cameraDistance = 9f * density
+                        rotationZ = animatedAngle
+                        rotationX = -animatedElevation * 0.85f
+                        rotationY = animatedElevation * 0.18f
+                        translationY = -animatedElevation * density * 0.22f
+                        shadowElevation = 18f
+                        scaleX = 1f + abs(animatedElevation) / 360f
+                        scaleY = 1f - abs(animatedElevation) / 620f
+                    }
                     .offset(y = floatOffset.dp),
                 contentAlignment = Alignment.Center
             ) {
                 PrecisionArrow(
                     modifier = Modifier.size(90.dp),
-                    isAligned = isAligned
+                    isAligned = isAligned,
+                    accentColor = heightColor
                 )
             }
         }
@@ -1254,43 +1363,28 @@ fun PrecisionFindingDisplay(
 // ============================================================
 
 @Composable
-fun PrecisionArrow(modifier: Modifier = Modifier, isAligned: Boolean = false) {
-    val arrowAlpha = if (isAligned) 0.95f else 0.85f
-    val strokeW = 9.dp  // thick, bold line
-
+fun PrecisionArrow(modifier: Modifier = Modifier, isAligned: Boolean = false, accentColor: Color = Color.White) {
+    val bottomColor = if (isAligned) Color.White else Color(0xFFECEFF1)
     Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val cx = w / 2f
-        val sw = strokeW.toPx()
-
-        // Outer glow
-        val glowW = sw * 1.8f
-        val tipY = h * 0.08f
-        val midY = h * 0.42f
-        val baseY = h * 0.92f
-        val headHalfW = w * 0.42f
-        val shaftHalfW = w * 0.14f
-
-        // === Glow layer ===
-        val glowColor = Color.White.copy(alpha = arrowAlpha * 0.3f)
-
-        // Shaft glow
-        drawLine(glowColor, Offset(cx, midY), Offset(cx, baseY), glowW, StrokeCap.Round)
-        // Arrowhead left wing glow
-        drawLine(glowColor, Offset(cx, tipY), Offset(cx - headHalfW, midY), glowW, StrokeCap.Round)
-        // Arrowhead right wing glow
-        drawLine(glowColor, Offset(cx, tipY), Offset(cx + headHalfW, midY), glowW, StrokeCap.Round)
-
-        // === Solid arrow ===
-        val arrowColor = Color.White.copy(alpha = arrowAlpha)
-
-        // Shaft
-        drawLine(arrowColor, Offset(cx, midY), Offset(cx, baseY), sw, StrokeCap.Round)
-        // Arrowhead left
-        drawLine(arrowColor, Offset(cx, tipY), Offset(cx - headHalfW, midY), sw, StrokeCap.Round)
-        // Arrowhead right
-        drawLine(arrowColor, Offset(cx, tipY), Offset(cx + headHalfW, midY), sw, StrokeCap.Round)
+        val shadow = Path().apply {
+            moveTo(size.width / 2, size.height * 0.07f)
+            lineTo(size.width * 0.93f, size.height * 0.88f)
+            lineTo(size.width * 0.5f, size.height * 0.69f)
+            lineTo(size.width * 0.07f, size.height * 0.88f)
+            close()
+        }
+        val path = Path().apply {
+            moveTo(size.width / 2, 0f)
+            lineTo(size.width, size.height * 0.85f)
+            lineTo(size.width * 0.5f, size.height * 0.65f)
+            lineTo(0f, size.height * 0.85f)
+            close()
+        }
+        drawPath(path = shadow, color = Color(0x66000000))
+        drawPath(
+            path = path,
+            brush = Brush.verticalGradient(colors = listOf(Color.White, accentColor, bottomColor))
+        )
     }
 }
 
@@ -1339,6 +1433,56 @@ fun PrecisionDataDisplay(uwbData: UwbRealData, isNearby: Boolean, isAligned: Boo
             style = MaterialTheme.typography.labelSmall,
             color = if (isAligned) Color.White.copy(alpha = 0.7f) else TextMuted,
             fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+fun RangingMetricsRow(uwbData: UwbRealData, isActive: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .padding(top = 2.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RangingMetric(
+            value = if (isActive) String.format("%.2fm", uwbData.horizontalDistanceMeters) else "-",
+            label = "水平距离",
+            color = Color(0xFF40C4FF)
+        )
+        RangingMetric(
+            value = if (isActive) String.format("%.1f°", uwbData.azimuthDegrees) else "-",
+            label = "方位角",
+            color = Color(0xFF00E676)
+        )
+        RangingMetric(
+            value = if (isActive && uwbData.hasElevation) String.format("%+.2fm", uwbData.relativeHeightMeters) else "-",
+            label = "高度差",
+            color = when {
+                !isActive || !uwbData.hasElevation -> Color(0xFFB0BEC5)
+                uwbData.relativeHeightMeters > 0.08f -> Color(0xFF40C4FF)
+                uwbData.relativeHeightMeters < -0.08f -> Color(0xFFFFAB40)
+                else -> Color.White
+            }
+        )
+    }
+}
+
+@Composable
+fun RangingMetric(value: String, label: String, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value,
+            color = color,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = label,
+            color = Color(0xFF8A948F),
+            fontSize = 12.sp
         )
     }
 }
@@ -1426,13 +1570,13 @@ fun InfoCard(
     findingStatus: FindingStatus
 ) {
     val statusText = when (findingStatus) {
-        FindingStatus.IDLE -> "Ready to search"
-        FindingStatus.SENDING, FindingStatus.BOARD_STARTING -> "Waking base station..."
-        FindingStatus.BOARD_STARTED, FindingStatus.RANGING -> "Starting ranging..."
-        FindingStatus.SUCCESS -> "Near (Approx. ${String.format("%.1f", uwbData.distanceMeters)} m)"
-        FindingStatus.FAILED -> "Write error — retry"
-        FindingStatus.TIMEOUT -> "No response from tag"
-        FindingStatus.UWB_ERROR -> "UWB ranging failure"
+        FindingStatus.IDLE -> "准备就绪"
+        FindingStatus.SENDING, FindingStatus.BOARD_STARTING -> "正在唤醒基站..."
+        FindingStatus.BOARD_STARTED, FindingStatus.RANGING -> "正在启动测距..."
+        FindingStatus.SUCCESS -> "近距离 (约 ${String.format("%.1f", uwbData.distanceMeters)} 米)"
+        FindingStatus.FAILED -> "写入失败 — 请重试"
+        FindingStatus.TIMEOUT -> "标签无响应"
+        FindingStatus.UWB_ERROR -> "UWB 测距失败"
     }
     val statusColor = when {
         findingStatus == FindingStatus.SUCCESS && uwbData.distanceMeters <= 1.0f -> PrimaryGreen
@@ -1463,7 +1607,11 @@ fun InfoCard(
                     .background(Color(0xFF0F1A15)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("🔑", fontSize = 22.sp)
+                ItemIconVector(
+                    category = itemCategory(deviceName),
+                    size = 24f,
+                    color = Color.White.copy(alpha = 0.8f)
+                )
             }
 
             Spacer(modifier = Modifier.width(14.dp))
@@ -1477,13 +1625,13 @@ fun InfoCard(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "STATUS: $statusText",
+                    text = "状态：$statusText",
                     style = MaterialTheme.typography.bodySmall,
                     color = statusColor,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "Last Seen: Home (2 min ago)",
+                    text = "最近连接：家中",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextMuted
                 )
@@ -1522,25 +1670,326 @@ fun DebugLogPanel(logs: List<String>) {
 
 // ---- MyDeviceItem (Section 6.9) ----
 
-private fun itemIcon(name: String): String {
+enum class ItemCategory {
+    KEY, WALLET, BACKPACK, CAR, PHONE, WATCH, GLASSES,
+    UMBRELLA, BIKE, LUGGAGE, PET, HEADPHONE, BOOK, REMOTE, TAG
+}
+
+fun itemCategory(name: String): ItemCategory {
     val lower = name.lowercase()
     return when {
-        "key" in lower || "钥匙" in lower -> "🔑"
-        "wallet" in lower || "钱包" in lower -> "👛"
-        "backpack" in lower || "背包" in lower || "bag" in lower -> "🎒"
-        "car" in lower || "车" in lower -> "🚗"
-        "phone" in lower || "手机" in lower -> "📱"
-        "watch" in lower || "手表" in lower -> "⌚"
-        "glass" in lower || "眼镜" in lower -> "👓"
-        "umbrella" in lower || "伞" in lower -> "☂️"
-        "bike" in lower || "自行车" in lower -> "🚲"
-        "luggage" in lower || "行李" in lower -> "🧳"
-        "cat" in lower || "猫" in lower -> "🐱"
-        "dog" in lower || "狗" in lower -> "🐶"
-        "headphone" in lower || "耳机" in lower -> "🎧"
-        "book" in lower || "书" in lower -> "📖"
-        "remote" in lower || "遥控" in lower -> "📡"
-        else -> "🏷️"
+        "key" in lower || "钥匙" in lower -> ItemCategory.KEY
+        "wallet" in lower || "钱包" in lower -> ItemCategory.WALLET
+        "backpack" in lower || "背包" in lower || "bag" in lower -> ItemCategory.BACKPACK
+        "car" in lower || "车" in lower -> ItemCategory.CAR
+        "phone" in lower || "手机" in lower -> ItemCategory.PHONE
+        "watch" in lower || "手表" in lower -> ItemCategory.WATCH
+        "glass" in lower || "眼镜" in lower -> ItemCategory.GLASSES
+        "umbrella" in lower || "伞" in lower -> ItemCategory.UMBRELLA
+        "bike" in lower || "自行车" in lower -> ItemCategory.BIKE
+        "luggage" in lower || "行李" in lower -> ItemCategory.LUGGAGE
+        "cat" in lower || "猫" in lower || "dog" in lower || "狗" in lower -> ItemCategory.PET
+        "headphone" in lower || "耳机" in lower -> ItemCategory.HEADPHONE
+        "book" in lower || "书" in lower -> ItemCategory.BOOK
+        "remote" in lower || "遥控" in lower -> ItemCategory.REMOTE
+        else -> ItemCategory.TAG
+    }
+}
+
+@Composable
+fun ItemIconVector(
+    category: ItemCategory,
+    size: Float,
+    color: Color = Color.White.copy(alpha = 0.9f)
+) {
+    Canvas(modifier = Modifier.size(size.dp)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = (w * 0.065f).coerceAtLeast(1.2f)
+        val r = w * 0.09f  // corner radius
+
+        when (category) {
+            ItemCategory.KEY -> {
+                // Minimalist key: small ring + two teeth
+                val cx = w * 0.36f; val cy = h * 0.31f; val ringR = w * 0.14f
+                drawCircle(color, ringR, Offset(cx, cy), style = Stroke(stroke))
+                drawLine(color, Offset(cx, cy + ringR), Offset(cx, h * 0.68f), stroke, StrokeCap.Round)
+                // teeth
+                drawLine(color, Offset(cx, h * 0.56f), Offset(cx + w * 0.3f, h * 0.56f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(cx, h * 0.68f), Offset(cx + w * 0.22f, h * 0.68f), stroke, StrokeCap.Round)
+            }
+
+            ItemCategory.WALLET -> {
+                // Horizontal card holder silhouette
+                val rrect = Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                        w * 0.12f, h * 0.35f, w * 0.88f, h * 0.65f, r, r
+                    ))
+                }
+                drawPath(rrect, color, style = Stroke(stroke))
+                // card lines
+                drawLine(color, Offset(w * 0.18f, h * 0.45f), Offset(w * 0.82f, h * 0.45f), stroke * 0.6f, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.18f, h * 0.53f), Offset(w * 0.65f, h * 0.53f), stroke * 0.6f, StrokeCap.Round)
+            }
+
+            ItemCategory.BACKPACK -> {
+                // Simple backpack outline
+                val path = Path().apply {
+                    moveTo(w * 0.3f, h * 0.18f)
+                    cubicTo(w * 0.2f, h * 0.18f, w * 0.15f, h * 0.3f, w * 0.15f, h * 0.4f)
+                    lineTo(w * 0.15f, h * 0.82f)
+                    cubicTo(w * 0.15f, h * 0.9f, w * 0.22f, h * 0.92f, w * 0.3f, h * 0.92f)
+                    lineTo(w * 0.7f, h * 0.92f)
+                    cubicTo(w * 0.78f, h * 0.92f, w * 0.85f, h * 0.9f, w * 0.85f, h * 0.82f)
+                    lineTo(w * 0.85f, h * 0.4f)
+                    cubicTo(w * 0.85f, h * 0.3f, w * 0.8f, h * 0.18f, w * 0.7f, h * 0.18f)
+                    close()
+                }
+                drawPath(path, color, style = Stroke(stroke))
+                // straps
+                drawLine(color, Offset(w * 0.28f, h * 0.18f), Offset(w * 0.28f, h * 0.06f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.72f, h * 0.18f), Offset(w * 0.72f, h * 0.06f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.26f, h * 0.06f), Offset(w * 0.74f, h * 0.06f), stroke, StrokeCap.Round)
+                // front pocket
+                drawLine(color, Offset(w * 0.35f, h * 0.45f), Offset(w * 0.65f, h * 0.45f), stroke * 0.6f, StrokeCap.Round)
+            }
+
+            ItemCategory.CAR -> {
+                // Front-view car silhouette
+                drawLine(color, Offset(w * 0.12f, h * 0.72f), Offset(w * 0.88f, h * 0.72f), stroke, StrokeCap.Round)
+                // body
+                val body = Path().apply {
+                    moveTo(w * 0.18f, h * 0.72f)
+                    lineTo(w * 0.18f, h * 0.6f)
+                    cubicTo(w * 0.18f, h * 0.48f, w * 0.28f, h * 0.32f, w * 0.38f, h * 0.32f)
+                    lineTo(w * 0.62f, h * 0.32f)
+                    cubicTo(w * 0.72f, h * 0.32f, w * 0.82f, h * 0.48f, w * 0.82f, h * 0.6f)
+                    lineTo(w * 0.82f, h * 0.72f)
+                }
+                drawPath(body, color, style = Stroke(stroke))
+                // windshield
+                val glass = Path().apply {
+                    moveTo(w * 0.42f, h * 0.35f)
+                    lineTo(w * 0.42f, h * 0.52f)
+                    cubicTo(w * 0.3f, h * 0.52f, w * 0.22f, h * 0.6f, w * 0.22f, h * 0.65f)
+                    moveTo(w * 0.58f, h * 0.35f)
+                    lineTo(w * 0.58f, h * 0.52f)
+                    cubicTo(w * 0.7f, h * 0.52f, w * 0.78f, h * 0.6f, w * 0.78f, h * 0.65f)
+                }
+                drawPath(glass, color, style = Stroke(stroke * 0.5f))
+                // headlights
+                drawCircle(color, w * 0.03f, Offset(w * 0.28f, h * 0.65f))
+                drawCircle(color, w * 0.03f, Offset(w * 0.72f, h * 0.65f))
+            }
+
+            ItemCategory.PHONE -> {
+                // Smartphone: rounded rect with a camera dot
+                val phone = Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                        w * 0.25f, h * 0.08f, w * 0.75f, h * 0.92f, r * 1.5f, r * 1.5f
+                    ))
+                }
+                drawPath(phone, color, style = Stroke(stroke))
+                // screen inner
+                drawRoundRect(
+                    color, Offset(w * 0.3f, h * 0.18f),
+                    Size(w * 0.4f, h * 0.6f), CornerRadius(r * 0.5f),
+                    style = Stroke(stroke * 0.4f)
+                )
+                // camera dot
+                drawCircle(color, w * 0.035f, Offset(w * 0.5f, h * 0.25f))
+            }
+
+            ItemCategory.WATCH -> {
+                // Left band top, left band bottom (from edge curving into the face)
+                val cx = w * 0.5f; val cy = h * 0.5f
+                // left top band
+                val lt = Path().apply {
+                    moveTo(w * 0.12f, h * 0.08f)
+                    cubicTo(w * 0.26f, h * 0.2f, w * 0.18f, h * 0.38f, cx - w * 0.2f, cy)
+                }
+                // left bottom band
+                val lb = Path().apply {
+                    moveTo(w * 0.12f, h * 0.92f)
+                    cubicTo(w * 0.26f, h * 0.8f, w * 0.18f, h * 0.62f, cx - w * 0.2f, cy)
+                }
+                // right top band
+                val rt = Path().apply {
+                    moveTo(w * 0.88f, h * 0.08f)
+                    cubicTo(w * 0.74f, h * 0.2f, w * 0.82f, h * 0.38f, cx + w * 0.2f, cy)
+                }
+                // right bottom band
+                val rb = Path().apply {
+                    moveTo(w * 0.88f, h * 0.92f)
+                    cubicTo(w * 0.74f, h * 0.8f, w * 0.82f, h * 0.62f, cx + w * 0.2f, cy)
+                }
+                drawPath(lt, color, style = Stroke(stroke))
+                drawPath(lb, color, style = Stroke(stroke))
+                drawPath(rt, color, style = Stroke(stroke))
+                drawPath(rb, color, style = Stroke(stroke))
+                // face
+                drawCircle(color, w * 0.2f, Offset(cx, cy), style = Stroke(stroke))
+                drawCircle(color, w * 0.03f, Offset(cx, cy))
+            }
+
+            ItemCategory.GLASSES -> {
+                // Two circles connected by a bridge
+                drawCircle(color, w * 0.22f, Offset(w * 0.22f, h * 0.48f), style = Stroke(stroke))
+                drawCircle(color, w * 0.22f, Offset(w * 0.78f, h * 0.48f), style = Stroke(stroke))
+                // bridge
+                drawLine(color, Offset(w * 0.42f, h * 0.48f), Offset(w * 0.58f, h * 0.48f), stroke, StrokeCap.Round)
+                // temples (arms)
+                drawLine(color, Offset(w * 0.04f, h * 0.48f), Offset(w * 0.14f, h * 0.4f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.96f, h * 0.48f), Offset(w * 0.86f, h * 0.4f), stroke, StrokeCap.Round)
+            }
+
+            ItemCategory.UMBRELLA -> {
+                // Arc canopy + handle stick
+                drawArc(
+                    color, 180f, 180f, false,
+                    Offset(w * 0.08f, h * 0.08f),
+                    Size(w * 0.84f, h * 0.47f),
+                    style = Stroke(stroke)
+                )
+                // shaft
+                drawLine(color, Offset(w * 0.5f, h * 0.35f), Offset(w * 0.5f, h * 0.8f), stroke, StrokeCap.Round)
+                // J-handle
+                drawArc(
+                    color, 0f, 180f, false,
+                    Offset(w * 0.38f, h * 0.64f),
+                    Size(w * 0.24f, h * 0.3f),
+                    style = Stroke(stroke)
+                )
+            }
+
+            ItemCategory.BIKE -> {
+                // Two wheels
+                drawCircle(color, w * 0.22f, Offset(w * 0.24f, h * 0.68f), style = Stroke(stroke * 0.8f))
+                drawCircle(color, w * 0.22f, Offset(w * 0.76f, h * 0.68f), style = Stroke(stroke * 0.8f))
+                // frame
+                drawLine(color, Offset(w * 0.24f, h * 0.68f), Offset(w * 0.5f, h * 0.35f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.76f, h * 0.68f), Offset(w * 0.5f, h * 0.35f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.24f, h * 0.68f), Offset(w * 0.5f, h * 0.8f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.76f, h * 0.68f), Offset(w * 0.5f, h * 0.8f), stroke, StrokeCap.Round)
+                // seat
+                drawLine(color, Offset(w * 0.44f, h * 0.32f), Offset(w * 0.56f, h * 0.32f), stroke, StrokeCap.Round)
+                // handlebar
+                drawLine(color, Offset(w * 0.44f, h * 0.2f), Offset(w * 0.56f, h * 0.22f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.5f, h * 0.22f), Offset(w * 0.5f, h * 0.35f), stroke, StrokeCap.Round)
+            }
+
+            ItemCategory.LUGGAGE -> {
+                // Rectangle case + top handle
+                val case = Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                        w * 0.2f, h * 0.32f, w * 0.8f, h * 0.88f, r, r
+                    ))
+                }
+                drawPath(case, color, style = Stroke(stroke))
+                // handle
+                drawLine(color, Offset(w * 0.38f, h * 0.32f), Offset(w * 0.38f, h * 0.12f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.62f, h * 0.32f), Offset(w * 0.62f, h * 0.12f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.35f, h * 0.12f), Offset(w * 0.65f, h * 0.12f), stroke, StrokeCap.Round)
+                // pull handle
+                drawLine(color, Offset(w * 0.5f, h * 0.88f), Offset(w * 0.5f, h * 0.2f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(w * 0.46f, h * 0.18f), Offset(w * 0.54f, h * 0.18f), stroke, StrokeCap.Round)
+            }
+
+            ItemCategory.PET -> {
+                // Paw print: central pad + 4 toe pads
+                val padCx = w * 0.5f; val padCy = h * 0.6f
+                val padR = w * 0.15f
+                val toeR = w * 0.08f
+                // main pad
+                val pad = Path().apply {
+                    moveTo(padCx - padR, padCy)
+                    cubicTo(padCx - padR, padCy + padR * 0.8f, padCx + padR, padCy + padR * 0.8f, padCx + padR, padCy)
+                    cubicTo(padCx + padR * 0.5f, padCy - padR * 0.4f, padCx - padR * 0.5f, padCy - padR * 0.4f, padCx - padR, padCy)
+                }
+                drawPath(pad, color, style = Stroke(stroke))
+                // 4 toes
+                val toes = listOf(
+                    Offset(padCx - w * 0.22f, h * 0.32f),
+                    Offset(padCx - w * 0.07f, h * 0.26f),
+                    Offset(padCx + w * 0.07f, h * 0.26f),
+                    Offset(padCx + w * 0.22f, h * 0.32f)
+                )
+                toes.forEach { t ->
+                    drawCircle(color, toeR, t, style = Stroke(stroke))
+                }
+            }
+
+            ItemCategory.HEADPHONE -> {
+                // Headband arc + two ear cups
+                val bandArc = Path().apply {
+                    moveTo(w * 0.08f, h * 0.45f)
+                    cubicTo(w * 0.08f, h * 0.08f, w * 0.92f, h * 0.08f, w * 0.92f, h * 0.45f)
+                }
+                drawPath(bandArc, color, style = Stroke(stroke))
+                // left cup
+                drawRoundRect(
+                    color, Offset(w * 0.04f, h * 0.35f),
+                    Size(w * 0.14f, h * 0.27f), CornerRadius(r * 0.7f),
+                    style = Stroke(stroke)
+                )
+                // right cup
+                drawRoundRect(
+                    color, Offset(w * 0.82f, h * 0.35f),
+                    Size(w * 0.14f, h * 0.27f), CornerRadius(r * 0.7f),
+                    style = Stroke(stroke)
+                )
+            }
+
+            ItemCategory.BOOK -> {
+                // Book outline with spine
+                val book = Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                        w * 0.25f, h * 0.2f, w * 0.82f, h * 0.88f, r * 0.4f, r * 0.4f
+                    ))
+                }
+                drawPath(book, color, style = Stroke(stroke))
+                // spine line
+                drawLine(color, Offset(w * 0.25f, h * 0.2f), Offset(w * 0.25f, h * 0.88f), stroke * 1.3f, StrokeCap.Round)
+                // page lines
+                for (y in listOf(0.35f, 0.45f, 0.55f)) {
+                    drawLine(color, Offset(w * 0.32f, h * y), Offset(w * 0.7f, h * y), stroke * 0.5f, StrokeCap.Round)
+                }
+            }
+
+            ItemCategory.REMOTE -> {
+                // Slim rectangle with a circle button
+                val body = Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                        w * 0.22f, h * 0.12f, w * 0.78f, h * 0.88f, r * 1.2f, r * 1.2f
+                    ))
+                }
+                drawPath(body, color, style = Stroke(stroke))
+                // center button (circle)
+                drawCircle(color, w * 0.1f, Offset(w * 0.5f, h * 0.48f), style = Stroke(stroke * 0.8f))
+                drawCircle(color, w * 0.03f, Offset(w * 0.5f, h * 0.48f))
+                // D-pad cross
+                val dpadR = w * 0.14f
+                drawLine(color, Offset(w * 0.5f - dpadR, h * 0.48f), Offset(w * 0.5f + dpadR, h * 0.48f), stroke * 0.4f)
+                drawLine(color, Offset(w * 0.5f, h * 0.48f - dpadR), Offset(w * 0.5f, h * 0.48f + dpadR), stroke * 0.4f)
+            }
+
+            ItemCategory.TAG -> {
+                // Angled label tag with a hole
+                val tag = Path().apply {
+                    moveTo(w * 0.2f, h * 0.15f)
+                    lineTo(w * 0.8f, h * 0.15f)
+                    lineTo(w * 0.8f, h * 0.55f)
+                    lineTo(w * 0.5f, h * 0.85f)
+                    lineTo(w * 0.2f, h * 0.55f)
+                    close()
+                }
+                drawPath(tag, color, style = Stroke(stroke))
+                // hole
+                drawCircle(color, w * 0.05f, Offset(w * 0.38f, h * 0.28f), style = Stroke(stroke * 0.6f))
+                // tie string
+                drawLine(color, Offset(w * 0.38f, h * 0.28f), Offset(w * 0.38f, h * 0.06f), stroke * 0.6f, StrokeCap.Round)
+            }
+        }
     }
 }
 
@@ -1573,7 +2022,11 @@ fun MyDeviceItem(name: String, isCurrent: Boolean, status: String, onClick: () -
                     .background(Color(0xFF0F1A15)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = itemIcon(name), fontSize = 18.sp)
+                ItemIconVector(
+                    category = itemCategory(name),
+                    size = 20f,
+                    color = Color.White.copy(alpha = 0.75f)
+                )
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -1586,7 +2039,7 @@ fun MyDeviceItem(name: String, isCurrent: Boolean, status: String, onClick: () -
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = if (isCurrent) "Connected" else "Tap to connect",
+                    text = if (isCurrent) "已连接" else "点击连接",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isCurrent) StatusNear else TextMuted
                 )
