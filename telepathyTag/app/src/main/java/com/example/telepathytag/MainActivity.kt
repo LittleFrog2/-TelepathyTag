@@ -172,6 +172,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Observe find-phone alert state for dialog
+                val isFindPhoneActive by feedbackManager.isFindPhoneAlertActive.collectAsState()
+
+                Box(modifier = Modifier.fillMaxSize()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = BackgroundBlack) {
                     if (currentMac.isEmpty()) {
                         BleScanScreen(
@@ -209,6 +213,14 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+
+                    // ---- Find Phone Ringtone Dialog ----
+                    if (isFindPhoneActive) {
+                        FindPhoneDialog(
+                            onDismiss = { feedbackManager.stopFindPhoneAlert() }
+                        )
+                    }
+                } // Box
             }
         }
     }
@@ -1496,6 +1508,112 @@ fun azimuthToRelativeDirection(degrees: Float): String {
         absDeg >= 165f -> "后方"
         else -> "前方"
     }
+}
+
+// ============================================================
+// FIND PHONE DIALOG — shown when tag triggers phone ringtone
+// ============================================================
+
+@Composable
+fun FindPhoneDialog(onDismiss: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "ringPulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500, easing = EaseInOutCubic),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500, easing = EaseInOutCubic),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    AlertDialog(
+        onDismissRequest = { /* stay open — must press button to dismiss */ },
+        containerColor = CardDark,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "🔔",
+                    modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = pulseScale
+                            scaleY = pulseScale
+                            alpha = pulseAlpha
+                        },
+                    fontSize = 28.sp
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "手机正在响铃",
+                    color = PrimaryGreen,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 20.sp
+                )
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Tag 按键已触发寻找模式，\n手机正在持续响铃。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                    lineHeight = 22.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = PrimaryGreen.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "👆",
+                        fontSize = 18.sp
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "找到手机后，按下方按钮停止响铃",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(6.dp, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(PrimaryGreen)
+                    .clickable { onDismiss() }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "已找到，关闭响铃",
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp
+                )
+            }
+        },
+        dismissButton = null,
+        shape = RoundedCornerShape(20.dp)
+    )
 }
 
 // ---- Legacy Data Display (kept for reference) ----
